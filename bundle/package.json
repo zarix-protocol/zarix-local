@@ -1,0 +1,16 @@
+{
+  "name": "zarix-local-bundle",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@solana/spl-token": "^0.4.0",
+    "@solana/web3.js": "^1.95.0",
+    "buffer": "^6.0.3"
+  },
+  "devDependencies": {
+    "esbuild": "^0.21.0"
+  },
+  "scripts": {
+    "bundle": "esbuild solana-entry.js --bundle --format=iife --global-name=SolanaBundle --platform=browser --outfile=../frontend/solana-bundle.js --minify"
+  }
+}

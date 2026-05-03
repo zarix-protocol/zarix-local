@@ -1,0 +1,7 @@
+/target
+/releases
+/dist
+/bundle/node_modules
+*.exe
+*.pdb
+.agents/

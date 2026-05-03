@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Zarix Local — Stake, unstake, and claim ZARIX tokens directly from your desktop. Zero server dependency, fully open source.">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self' https://*.helius-rpc.com https://*.quiknode.pro https://*.quicknode.com https://api.mainnet-beta.solana.com https://*.solana.com; img-src 'self' data:; frame-src 'none';">
+    <title>ZARIX LOCAL — Desktop Staking</title>
+    <link rel="icon" type="image/png" href="logo.png">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div id="toast-container"></div>
+
+    <header id="app-header">
+        <div class="header-left">
+            <div class="logo">
+                <img src="logo.png" alt="ZARIX" class="logo-img">
+                <span class="logo-text">ZARIX <span class="logo-local">LOCAL</span></span>
+            </div>
+            <span id="status-indicator" class="status-dot offline" title="Disconnected"></span>
+        </div>
+        <nav class="header-nav">
+            <button class="nav-btn active" data-view="dashboard" id="nav-dashboard">Dashboard</button>
+            <button class="nav-btn" data-view="stake" id="nav-stake">Stake</button>
+            <button class="nav-btn" data-view="transactions" id="nav-transactions">Transactions</button>
+            <button class="nav-btn" data-view="lp" id="nav-lp">LP Staker</button>
+            <button class="nav-btn" data-view="settings" id="nav-settings">⚙️</button>
+        </nav>
+        <div class="header-right">
+            <button id="btn-connect" class="btn btn-primary">Connect Wallet</button>
+            <button id="btn-disconnect" class="btn btn-outline hidden">
+                <span id="wallet-address"></span>
+                <span class="disconnect-icon">✕</span>
+            </button>
+        </div>
+    </header>
+
+    <main id="app-main">
+        <section id="view-dashboard" class="view active">
+            <div id="connect-prompt" class="connect-prompt">
+                <div class="connect-card glass-card">
+                    <div class="connect-icon">🔒</div>
+                    <h1>Welcome to ZARIX Local</h1>
+                    <p>Connect your wallet to view your staking dashboard. All transactions go directly to Solana — no middleman.</p>
+                    <button id="btn-connect-hero" class="btn btn-primary btn-lg">Connect Wallet</button>
+                    <div class="security-badges">
+                        <span class="badge">🔐 Local Only</span>
+                        <span class="badge">📂 Open Source</span>
+                        <span class="badge">🚫 No Server</span>
+                    </div>
+                </div>
+            </div>
+
+            <div id="dashboard-content" class="hidden">
+                <div class="stats-row">
+                    <div class="stat-card glass-card">
+                        <div class="stat-label">ZARIX Balance</div>
+                        <div class="stat-value" id="stat-balance">—</div>
+                        <div class="stat-sub" id="stat-balance-usd"></div>
+                    </div>
+                    <div class="stat-card glass-card">
+                        <div class="stat-label">Total Staked</div>
+                        <div class="stat-value" id="stat-staked">—</div>
+                        <div class="stat-sub" id="stat-stakes-count"></div>
+                    </div>
+                    <div class="stat-card glass-card">
+                        <div class="stat-label">Voting Power</div>
+                        <div class="stat-value" id="stat-voting">—</div>
+                        <div class="stat-sub" id="stat-network-share"></div>
+                    </div>
+                    <div class="stat-card glass-card">
+                        <div class="stat-label">Total Claimable</div>
+                        <div class="stat-value claimable-value" id="stat-claimable">—</div>
+                        <div class="stat-sub" id="stat-daily-est"></div>
+                    </div>
+                </div>
+
+                <div class="network-bar glass-card">
+                    <div class="network-item">
+                        <span class="network-label">Network Staked</span>
+                        <span class="network-value" id="net-total-staked">—</span>
+                    </div>
+                    <div class="network-item">
+                        <span class="network-label">Halving Phase</span>
+                        <span class="network-value" id="net-halving">—</span>
+                    </div>
+                    <div class="network-item">
+                        <span class="network-label">Daily Emission</span>
+                        <span class="network-value" id="net-daily-emission">—</span>
+                    </div>
+                    <div class="network-item">
+                        <span class="network-label">Current Epoch</span>
+                        <span class="network-value" id="net-epoch">—</span>
+                    </div>
+                </div>
+
+                <div class="stakes-section">
+                    <div class="section-header">
+                        <h2>Active Stakes</h2>
+                        <button id="btn-refresh" class="btn btn-sm btn-outline" title="Refresh data">↻ Refresh</button>
+                    </div>
+                    <div id="stakes-list" class="stakes-list">
+                        <div class="empty-state">
+                            <p>No active stakes found. Go to the <strong>Stake</strong> tab to create your first stake.</p>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </section>
+
+        <section id="view-transactions" class="view">
+            <div class="stakes-section">
+                <div class="section-header">
+                    <h2>Recent Transactions</h2>
+                    <button id="btn-refresh-tx" class="btn btn-sm btn-outline">↻ Refresh</button>
+                </div>
+                <div id="tx-list" class="tx-list">
+                    <div class="empty-state"><p>Connect wallet to view transactions.</p></div>
+                </div>
+            </div>
+        </section>
+
+        <section id="view-stake" class="view">
+            <div class="stake-form-container">
+                <div class="stake-form glass-card">
+                    <h2>Stake ZARIX</h2>
+                    <p class="form-desc">Lock your ZARIX tokens to earn daily allocations and voting power.</p>
+
+                    <div class="form-group">
+                        <label for="stake-amount">Amount</label>
+                        <div class="input-group">
+                            <input type="number" id="stake-amount" placeholder="0" min="0" step="1">
+                            <span class="input-suffix">ZARIX</span>
+                            <button id="btn-max" class="btn btn-sm btn-outline">MAX</button>
+                        </div>
+                        <div class="form-hint" id="stake-balance-hint">Available: —</div>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Lock Duration</label>
+                        <div class="lock-options" id="lock-options">
+                            <button class="lock-btn active" data-days="365" data-years="1">1Y</button>
+                            <button class="lock-btn" data-days="730" data-years="2">2Y</button>
+                            <button class="lock-btn" data-days="1095" data-years="3">3Y</button>
+                            <button class="lock-btn" data-days="1460" data-years="4">4Y</button>
+                            <button class="lock-btn" data-days="1825" data-years="5">5Y</button>
+                            <button class="lock-btn" data-days="2190" data-years="6">6Y</button>
+                            <button class="lock-btn" data-days="2555" data-years="7">7Y</button>
+                        </div>
+                    </div>
+
+                    <div class="stake-preview glass-card-inner">
+                        <div class="preview-row">
+                            <span>Voting Multiplier</span>
+                            <span id="preview-multiplier">1.0x</span>
+                        </div>
+                        <div class="preview-row">
+                            <span>Voting Power</span>
+                            <span id="preview-voting-power">0</span>
+                        </div>
+                        <div class="preview-row">
+                            <span>Est. Daily Allocation</span>
+                            <span id="preview-daily" class="claimable-value">~0.00 ZARIX</span>
+                        </div>
+                        <div class="preview-row">
+                            <span>Lock Until</span>
+                            <span id="preview-lock-end">—</span>
+                        </div>
+                    </div>
+
+                    <button id="btn-stake" class="btn btn-primary btn-lg btn-full" disabled>
+                        🔒 Stake ZARIX
+                    </button>
+                    <div id="stake-status" class="form-status"></div>
+                </div>
+            </div>
+        </section>
+
+        <section id="view-lp" class="view">
+            <div class="section-container">
+                <div class="section-header">
+                    <h2>LP Staker</h2>
+                    <button id="btn-refresh-lp" class="btn btn-sm btn-outline">↻ Refresh</button>
+                </div>
+
+                <div id="lp-gauges" class="lp-gauges-grid">
+                    <div class="empty-state"><p>Connect wallet and use Helius RPC to view LP positions.</p></div>
+                </div>
+
+                <div id="lp-stake-form" class="glass-card lp-stake-form" style="display:none; margin-top:20px; padding:20px;">
+                    <h3>📥 Stake LP Tokens</h3>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="lp-pool-select">LP Pool</label>
+                            <select id="lp-pool-select" class="form-control"></select>
+                        </div>
+                        <div class="form-group">
+                            <label for="lp-amount-input">LP Amount</label>
+                            <div class="input-with-max">
+                                <input type="number" id="lp-amount-input" class="form-control" placeholder="0.0000" min="0" step="any">
+                                <button type="button" id="btn-lp-max" class="btn-max">MAX</button>
+                            </div>
+                            <span id="lp-balance-hint" class="balance-hint">Available: —</span>
+                        </div>
+                        <div class="form-group">
+                            <label for="lp-lock-select">Lock Duration</label>
+                            <select id="lp-lock-select" class="form-control">
+                                <option value="0">No Lock (1x)</option>
+                                <option value="7">7 Days (1.05x)</option>
+                                <option value="30">30 Days (1.15x)</option>
+                                <option value="90">90 Days (1.5x)</option>
+                                <option value="180">180 Days (1.75x)</option>
+                                <option value="365">365 Days (2.0x)</option>
+                            </select>
+                        </div>
+                    </div>
+                    <button id="btn-lp-stake" class="btn btn-primary" style="margin-top:12px;">Stake LP</button>
+                </div>
+
+                <div id="lp-positions" class="lp-positions-container"></div>
+            </div>
+        </section>
+
+        <section id="view-settings" class="view">
+            <div class="settings-container">
+                <div class="settings-card glass-card">
+                    <h2>⚙️ Settings</h2>
+
+                    <div class="form-group">
+                        <label for="rpc-url">Solana RPC URL</label>
+                        <div class="input-group">
+                            <input type="url" id="rpc-url" placeholder="https://api.mainnet-beta.solana.com">
+                            <button id="btn-save-rpc" class="btn btn-sm btn-primary">Save</button>
+                            <button id="btn-reset-rpc" class="btn btn-sm btn-outline" title="Reset to Solana Public RPC">Reset</button>
+                        </div>
+                        <div class="form-hint">Default: Solana Public RPC. Paste your own Helius/QuickNode URL for better performance.</div>
+                    </div>
+
+                    <div class="form-group">
+                        <button id="btn-test-rpc" class="btn btn-outline">🔗 Test RPC Connection</button>
+                        <div id="rpc-test-result" class="form-status"></div>
+                    </div>
+
+                    <hr class="divider">
+
+                    <div class="settings-info">
+                        <div class="info-row">
+                            <span>Version</span>
+                            <span>v1.0.0</span>
+                        </div>
+                        <div class="info-row">
+                            <span>Program ID</span>
+                            <span class="mono">6uwVSD...opXLVs</span>
+                        </div>
+                        <div class="info-row">
+                            <span>Token Mint</span>
+                            <span class="mono">ukV3rK...ydHuTf</span>
+                        </div>
+                        <div class="info-row">
+                            <span>Server</span>
+                            <span>localhost:3847</span>
+                        </div>
+                        <div class="info-row">
+                            <span>Source Code</span>
+                            <a href="https://github.com/zarix/zarix-local" target="_blank" class="link">GitHub ↗</a>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="settings-card glass-card">
+                    <h2>🔐 Security Model</h2>
+                    <div class="security-grid">
+                        <div class="security-item">
+                            <div class="security-icon">🔑</div>
+                            <div>
+                                <strong>Private Keys</strong>
+                                <p>Never touched — your wallet extension handles all signing</p>
+                            </div>
+                        </div>
+                        <div class="security-item">
+                            <div class="security-icon">🌐</div>
+                            <div>
+                                <strong>Transactions</strong>
+                                <p>Go directly to Solana RPC, never to any Zarix server</p>
+                            </div>
+                        </div>
+                        <div class="security-item">
+                            <div class="security-icon">🏠</div>
+                            <div>
+                                <strong>Localhost Only</strong>
+                                <p>Runs on 127.0.0.1 — no network exposure</p>
+                            </div>
+                        </div>
+                        <div class="security-item">
+                            <div class="security-icon">📂</div>
+                            <div>
+                                <strong>Open Source</strong>
+                                <p>Fully auditable on GitHub, build from source yourself</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="settings-card glass-card">
+                    <h2>⏻ Application</h2>
+                    <p class="form-desc">Stop the ZARIX Local server. You can restart it anytime by running the application again.</p>
+                    <button id="btn-quit-app" class="btn btn-danger btn-lg btn-full">⏻ Quit Application</button>
+                    <div id="quit-status" class="form-status"></div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer id="app-footer">
+        <div class="footer-left">
+            <span id="footer-rpc" class="footer-item">🔗 RPC: Solana Public</span>
+        </div>
+        <div class="footer-right">
+            <span class="footer-item">📦 v1.0.0</span>
+            <span class="footer-item">🔒 Localhost Only</span>
+        </div>
+    </footer>
+
+    <script src="solana-bundle.js"></script>
+    <script src="constants.js"></script>
+    <script src="solana-program.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
