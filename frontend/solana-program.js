@@ -411,17 +411,12 @@ async function fetchAllLPGauges(connection) {
   });
   const gauges = [];
 
-  const EXCLUDED_MINTS = new Set([
-    'So11111111111111111111111111111111111111112',
-    'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
-    'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
-  ]);
   for (const { pubkey, account } of accounts) {
     try {
       const gauge = parseLPGauge(account.data);
       gauge.pda = pubkey;
 
-      if (EXCLUDED_MINTS.has(gauge.poolMint.toString())) continue;
+      if (UI.EXCLUDED_LP_MINTS.has(gauge.poolMint.toString())) continue;
       gauges.push(gauge);
     } catch(e) { console.error('Parse LP gauge error:', e); }
   }

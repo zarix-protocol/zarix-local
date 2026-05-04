@@ -10,7 +10,7 @@
     userStakes: [],
     tokenBalance: 0,
     selectedLockDays: 365,
-    rpcUrl: localStorage.getItem('zarix_rpc') || 'http://127.0.0.1:3847/api/rpc',
+    rpcUrl: localStorage.getItem(UI.STORAGE.RPC_URL) || UI.APP.PROXY_URL,
     refreshInterval: null,
   };
   function showToast(message, type = 'info', duration = 5000) {
@@ -50,9 +50,9 @@
       }
     });
   });
-  async function pollConfirmation(signature, maxRetries = 30) {
+  async function pollConfirmation(signature, maxRetries = UI.TIME.POLL_MAX_RETRIES) {
     for (let i = 0; i < maxRetries; i++) {
-      await new Promise(r => setTimeout(r, 2000));
+      await new Promise(r => setTimeout(r, UI.TIME.POLL_INTERVAL_MS));
       try {
         const resp = await state.connection.getSignatureStatuses([signature]);
         const status = resp && resp.value && resp.value[0];
@@ -70,9 +70,9 @@
     throw new Error('Transaction confirmation timeout — check Solscan for tx: ' + signature);
   }
   function isPremiumRPC() {
-    const target = localStorage.getItem('zarix_rpc_target') || '';
+    const target = localStorage.getItem(UI.STORAGE.RPC_TARGET) || '';
     const url = (target || state.rpcUrl).toLowerCase();
-    return url.includes('helius') || url.includes('quicknode') || url.includes('alchemy') || url.includes('triton');
+    return UI.PREMIUM_RPC_PROVIDERS.some(p => url.includes(p));
   }
 
   function emptyState(msg) {
@@ -125,11 +125,11 @@
       commitment: 'confirmed',
       confirmTransactionInitialTimeout: 60000,
     });
-    const target = localStorage.getItem('zarix_rpc_target') || '';
-    const isProxy = state.rpcUrl.includes('/api/rpc');
+    const target = localStorage.getItem(UI.STORAGE.RPC_TARGET) || '';
+    const isProxy = state.rpcUrl.includes(UI.APP.API_SET_RPC.replace('/set', ''));
 
     if (isProxy && target) {
-      fetch('/api/rpc/set', {
+      fetch(UI.APP.API_SET_RPC, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ rpc_url: target }),
@@ -143,7 +143,7 @@
     else if (isProxy && target) label = 'Local Proxy → Custom';
     else if (state.rpcUrl.includes('helius')) label = 'Helius';
     document.getElementById('footer-rpc').textContent = '🔗 RPC: ' + label;
-    document.getElementById('rpc-url').value = isProxy ? (target || 'https://api.mainnet-beta.solana.com') : state.rpcUrl;
+    document.getElementById('rpc-url').value = isProxy ? (target || UI.APP.DEFAULT_SOLANA_RPC) : state.rpcUrl;
   }
   function getProvider() {
     if (window.phantom?.solana?.isPhantom) return window.phantom.solana;
@@ -173,7 +173,7 @@
       showToast('Wallet connected!', 'success', 3000);
       await refreshAll();
 
-      state.refreshInterval = setInterval(refreshAll, 120000); 
+      state.refreshInterval = setInterval(refreshAll, UI.TIME.REFRESH_INTERVAL_MS); 
     } catch(e) {
       showToast('Connection rejected', 'error');
     }
@@ -248,18 +248,18 @@
     document.getElementById('stat-voting').textContent = Math.floor(totalVotingPower).toLocaleString();
 
     const totalNet = Number(ps.totalNetworkStaked) / ZARIX.LAMPORTS_PER_TOKEN;
-    const share = totalNet > 0 ? ((totalUserStaked / totalNet) * 100).toFixed(4) : '0';
+    const share = totalNet > 0 ? ((totalUserStaked / totalNet) * 100).toFixed(UI.DECIMALS.PRECISE) : '0';
     document.getElementById('stat-network-share').textContent = share + '% of network';
 
-    document.getElementById('stat-claimable').textContent = totalClaimable.toFixed(2);
+    document.getElementById('stat-claimable').textContent = formatPrecise(totalClaimable);
     const { epoch, phase, stakerPct } = getHalvingCtx();
     const estDaily = calculateEstimatedDaily(totalUserStaked, totalNet, phase, stakerPct);
-    document.getElementById('stat-daily-est').textContent = '~' + estDaily.toFixed(2) + ' ZARIX/day';
+    document.getElementById('stat-daily-est').textContent = '~' + formatCompact(estDaily) + ' ' + UI.STRINGS.TOKEN + '/day';
 
-    document.getElementById('net-total-staked').textContent = Math.floor(totalNet).toLocaleString() + ' ZARIX';
+    document.getElementById('net-total-staked').textContent = Math.floor(totalNet).toLocaleString() + ' ' + UI.STRINGS.TOKEN;
     document.getElementById('net-halving').textContent = 'Phase ' + phase;
     const dailyEmission = getDailyStakerAllocation(phase, stakerPct);
-    document.getElementById('net-daily-emission').textContent = Math.floor(dailyEmission).toLocaleString() + ' ZARIX';
+    document.getElementById('net-daily-emission').textContent = Math.floor(dailyEmission).toLocaleString() + ' ' + UI.STRINGS.TOKEN;
     document.getElementById('net-epoch').textContent = epoch.toLocaleString();
 
     renderStakes();
@@ -383,17 +383,10 @@
         }
 
         if (type.label === 'Program') {
-          const KNOWN_DEX = {
-            'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK': 'Liquidity',  // Raydium CLMM
-            '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8': 'Swap',       // Raydium AMM
-            'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc': 'Swap',        // Orca Whirlpool
-            'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4': 'Swap',        // Jupiter v6
-            'routeUGWgWzqBWFcrCfv8tritsqukccJPu3q5GPP3xS': 'Swap',       // Raydium Route
-          };
           let dexLabel = '';
           for (const ix of instructions) {
             const ixProg = ix.programId?.toString?.() || ix.programId || '';
-            if (KNOWN_DEX[ixProg]) { dexLabel = KNOWN_DEX[ixProg]; break; }
+            if (UI.KNOWN_DEX_PROGRAMS[ixProg]) { dexLabel = UI.KNOWN_DEX_PROGRAMS[ixProg]; break; }
           }
 
           if (dexLabel) {
@@ -444,16 +437,16 @@
       const statusText = tx.err ? '✕ Failed' : '✓ OK';
 
       let amountHtml;
-      if (tx.zarixAmount > 0.001) {
+      if (tx.zarixAmount > UI.THRESHOLDS.MIN_CLAIMABLE) {
         const cls = tx.amountSign === '+' ? 'tx-amount positive' : 'tx-amount negative';
-        amountHtml = '<span class="' + cls + '">' + tx.amountSign + Math.floor(tx.zarixAmount).toLocaleString() + ' ZARIX</span>';
+        amountHtml = '<span class="' + cls + '">' + tx.amountSign + Math.floor(tx.zarixAmount).toLocaleString() + ' ' + UI.STRINGS.TOKEN + '</span>';
       } else {
         amountHtml = '<span class="tx-amount">—</span>';
       }
 
       return '<div class="tx-row">' +
         '<span class="tx-type ' + tx.type.cls + '">' + tx.type.label + '</span>' +
-        '<span class="tx-sig"><a href="https://solscan.io/tx/' + tx.sig + '" target="_blank" title="' + tx.sig + '">' + shortSig + ' ↗</a></span>' +
+        '<span class="tx-sig"><a href="' + explorerTxUrl(tx.sig) + '" target="_blank" title="' + tx.sig + '">' + shortSig + ' ↗</a></span>' +
         amountHtml +
         '<span class="tx-time">' + time + '</span>' +
         '<span class="tx-status ' + statusClass + '">' + statusText + '</span>' +
@@ -465,10 +458,10 @@
     const d = new Date(blockTime * 1000);
     const now = Date.now();
     const diff = (now - d.getTime()) / 1000;
-    if (diff < 60) return 'Just now';
-    if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
-    if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
-    if (diff < 604800) return Math.floor(diff / 86400) + 'd ago';
+    if (diff < UI.TIME.SECONDS_PER_MINUTE) return 'Just now';
+    if (diff < UI.TIME.SECONDS_PER_HOUR) return Math.floor(diff / UI.TIME.SECONDS_PER_MINUTE) + 'm ago';
+    if (diff < ZARIX.SECONDS_PER_DAY) return Math.floor(diff / UI.TIME.SECONDS_PER_HOUR) + 'h ago';
+    if (diff < UI.TIME.SECONDS_PER_WEEK) return Math.floor(diff / ZARIX.SECONDS_PER_DAY) + 'd ago';
     return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   }
 
@@ -515,8 +508,8 @@
       poolSelect.innerHTML = gauges.map((g, i) => {
         const mint = g.poolMint.toString();
         const short = shortenMint(mint);
-        const bal = (state.lpBalances[mint] || 0).toFixed(4);
-        return '<option value="' + i + '">' + short + ' — ' + bal + ' LP available</option>';
+        const bal = formatPrecise(state.lpBalances[mint] || 0);
+        return '<option value="' + i + '">' + short + ' — ' + bal + ' ' + UI.STRINGS.LP + ' available</option>';
       }).join('');
       document.getElementById('lp-stake-form').style.display = '';
       updateLPBalanceHint();
@@ -537,7 +530,7 @@
     if (!gauge) return;
     const mint = gauge.poolMint.toString();
     const bal = state.lpBalances[mint] || 0;
-    document.getElementById('lp-balance-hint').textContent = 'Available: ' + bal.toFixed(4) + ' LP';
+    document.getElementById('lp-balance-hint').textContent = 'Available: ' + formatPrecise(bal) + ' ' + UI.STRINGS.LP;
   }
 
   function renderLPGauges(gauges) {
@@ -579,7 +572,7 @@
               '<div class="gauge-card-top">' +
                 '<div class="gauge-card-identity">' +
                   '<span class="tx-badge ' + (g.isActive ? 'stake' : 'other') + '">' + (g.isActive ? '● Active' : '○ Inactive') + '</span>' +
-                  '<a href="https://solscan.io/account/' + mintStr + '" target="_blank" rel="noopener" class="lp-pool-link">' + shortMint + ' ↗</a>' +
+                  '<a href="' + explorerAccountUrl(mintStr) + '" target="_blank" rel="noopener" class="lp-pool-link">' + shortMint + ' ↗</a>' +
                 '</div>' +
               '</div>' +
               '<div class="gauge-card-stats">' +
@@ -589,13 +582,13 @@
                 '</div>' +
                 '<div class="gauge-stat">' +
                   '<span class="gauge-stat-label">Daily Allocation</span>' +
-                  '<span class="gauge-stat-value accent">' + Math.floor(perGaugeDaily).toLocaleString() + ' <small>ZARIX</small></span>' +
+                  '<span class="gauge-stat-value accent">' + Math.floor(perGaugeDaily).toLocaleString() + ' <small>' + UI.STRINGS.TOKEN + '</small></span>' +
                 '</div>' +
               '</div>' +
               '<div class="gauge-share-bar">' +
                 '<div class="gauge-share-header">' +
                   '<span>Network Share</span>' +
-                  '<span class="gauge-share-pct">' + sharePercent.toFixed(1) + '%</span>' +
+                  '<span class="gauge-share-pct">' + sharePercent.toFixed(UI.DECIMALS.MULTIPLIER) + '%</span>' +
                 '</div>' +
                 '<div class="gauge-share-track">' +
                   '<div class="gauge-share-fill" style="width:' + Math.min(sharePercent, 100) + '%"></div>' +
@@ -621,6 +614,7 @@
     const now = Math.floor(Date.now() / 1000);
 
     const dailyLpAllocationLamports = getDailyLpAllocationLamports();
+    const globalTotalWeightedLamports = gauges.reduce((s, g) => s + Number(g.totalWeightedLp || 0n), 0);
 
     const posData = positions.map((p, i) => {
       const lpAmt = Number(p.lpAmount) / ZARIX.LAMPORTS_PER_TOKEN;
@@ -634,44 +628,40 @@
 
       const userWeightedLamports = (Number(p.lpAmount) * Number(p.lockMultiplier)) / 1000;
 
-      const gaugeTotalWeightedLamports = Number(p.gaugeTotalWeightedLp || 0n);
-
-      const dailyRewardLamports = gaugeTotalWeightedLamports > 0
-        ? Math.floor((userWeightedLamports * dailyLpAllocationLamports) / gaugeTotalWeightedLamports)
+      const dailyRewardLamports = globalTotalWeightedLamports > 0
+        ? Math.floor((userWeightedLamports * dailyLpAllocationLamports) / globalTotalWeightedLamports)
         : 0;
       const dailyShare = dailyRewardLamports / ZARIX.LAMPORTS_PER_TOKEN;
 
       const lastClaim = Number(p.lastClaimTimestamp);
       const sinceLastClaim = lastClaim > 0 ? (now - lastClaim) : (now - Number(p.stakeTimestamp));
-      const daysSinceLastClaim = Math.max(Math.floor(sinceLastClaim / 86400), 0);
+      const daysSinceLastClaim = Math.max(Math.floor(sinceLastClaim / ZARIX.SECONDS_PER_DAY), 0);
       const claimable = dailyShare * daysSinceLastClaim;
 
       const totalClaimed = Number(p.totalAllocatedAllocations) / ZARIX.LAMPORTS_PER_TOKEN;
 
-      const stakedDate = new Date(Number(p.stakeTimestamp) * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-      const lockEndDate = lockDays > 0 ? new Date(lockEnd * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—';
+      const stakedDate = new Date(Number(p.stakeTimestamp) * 1000).toLocaleDateString('en-US', UI.DATE_FORMAT);
+      const lockEndDate = lockDays > 0 ? new Date(lockEnd * 1000).toLocaleDateString('en-US', UI.DATE_FORMAT) : '—';
       const lastClaimDate = lastClaim > 0
-        ? new Date(lastClaim * 1000).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true })
+        ? new Date(lastClaim * 1000).toLocaleString('en-US', { ...UI.DATE_FORMAT, hour: 'numeric', minute: '2-digit', hour12: true })
         : 'Never';
 
       const effectiveLastClaim = lastClaim > 0 ? lastClaim : Number(p.stakeTimestamp);
-      const nextClaimTimestamp = effectiveLastClaim + 86400;
+      const nextClaimTimestamp = effectiveLastClaim + ZARIX.SECONDS_PER_DAY;
       let nextClaimLabel = '';
       if (daysSinceLastClaim >= 1) {
         nextClaimLabel = '✅ Available Now';
       } else {
         const secsLeft = Math.max(nextClaimTimestamp - now, 0);
-        const hLeft = Math.floor(secsLeft / 3600);
-        const mLeft = Math.floor((secsLeft % 3600) / 60);
-        nextClaimLabel = '⏳ ' + hLeft + 'h ' + mLeft + 'm';
+        nextClaimLabel = '⏳ ' + formatDuration(secsLeft);
       }
       const nextClaimIsReady = daysSinceLastClaim >= 1;
 
       let timeRemaining = '';
       if (isLocked) {
         const rem = lockEnd - now;
-        const d = Math.floor(rem / 86400);
-        const h = Math.floor((rem % 86400) / 3600);
+        const d = Math.floor(rem / ZARIX.SECONDS_PER_DAY);
+        const h = Math.floor((rem % ZARIX.SECONDS_PER_DAY) / UI.TIME.SECONDS_PER_HOUR);
         if (d > 365) { const y = Math.floor(d / 365); const dd = d % 365; timeRemaining = y + 'y ' + dd + 'd'; }
         else if (d > 0) timeRemaining = d + 'd ' + h + 'h';
         else timeRemaining = h + 'h';
@@ -692,11 +682,11 @@
         '</div>' +
         '<div class="lp-pos-summary-item">' +
           '<span class="lp-pos-summary-label">Total LP Staked</span>' +
-          '<span class="lp-pos-summary-value">' + totalStaked.toFixed(4) + '</span>' +
+          '<span class="lp-pos-summary-value">' + formatPrecise(totalStaked) + '</span>' +
         '</div>' +
         '<div class="lp-pos-summary-item highlight">' +
           '<span class="lp-pos-summary-label">Total Claimable</span>' +
-          '<span class="lp-pos-summary-value positive">~' + totalClaimable.toFixed(2) + ' ZARIX</span>' +
+          '<span class="lp-pos-summary-value positive">~' + formatPrecise(totalClaimable) + ' ' + UI.STRINGS.TOKEN + '</span>' +
         '</div>' +
       '</div>' +
 
@@ -705,7 +695,7 @@
           '<div class="lp-pos-top">' +
             '<div class="lp-pos-identity">' +
               '<span class="lp-pos-num">#' + (i + 1) + '</span>' +
-              '<a href="https://solscan.io/account/' + p.mintStr + '" target="_blank" rel="noopener" class="lp-pool-link">' + p.shortMint + ' ↗</a>' +
+              '<a href="' + explorerAccountUrl(p.mintStr) + '" target="_blank" rel="noopener" class="lp-pool-link">' + p.shortMint + ' ↗</a>' +
               '<span class="tx-badge ' + (p.isLocked ? 'claim' : 'stake') + '">' + (p.isLocked ? '🔒 ' + p.timeRemaining : '✅ Unlocked') + '</span>' +
             '</div>' +
           '</div>' +
@@ -713,13 +703,13 @@
           '<div class="lp-pos-hero">' +
             '<div class="lp-pos-hero-stat">' +
               '<div class="lp-pos-hero-label">LP Staked</div>' +
-              '<div class="lp-pos-hero-value">' + p.lpAmt.toFixed(4) + '</div>' +
-              '<div class="lp-pos-hero-sub">' + p.multiplier.toFixed(1) + 'x multiplier</div>' +
+              '<div class="lp-pos-hero-value">' + formatPrecise(p.lpAmt) + '</div>' +
+              '<div class="lp-pos-hero-sub">' + p.multiplier.toFixed(UI.DECIMALS.MULTIPLIER) + 'x multiplier</div>' +
             '</div>' +
             '<div class="lp-pos-hero-stat accent">' +
               '<div class="lp-pos-hero-label">Claimable Rewards</div>' +
-              '<div class="lp-pos-hero-value">' + (p.claimable < 0.01 ? p.claimable.toFixed(4) : '~' + p.claimable.toFixed(2)) + ' <small>ZARIX</small></div>' +
-              '<div class="lp-pos-hero-sub">~' + p.dailyShare.toFixed(2) + ' /day</div>' +
+              '<div class="lp-pos-hero-value">' + formatPrecise(p.claimable) + ' <small>' + UI.STRINGS.TOKEN + '</small></div>' +
+              '<div class="lp-pos-hero-sub">~' + formatCompact(p.dailyShare) + ' /day</div>' +
             '</div>' +
           '</div>' +
 
@@ -729,16 +719,16 @@
             (p.isLocked ? '<div class="lp-pos-meta-item"><span>Lock Ends</span><span>' + p.lockEndDate + '</span></div>' : '') +
             '<div class="lp-pos-meta-item"><span>Last Claim</span><span>' + p.lastClaimDate + '</span></div>' +
             '<div class="lp-pos-meta-item"><span>Next Claim</span><span class="' + (p.nextClaimIsReady ? 'positive' : 'text-warning') + '">' + p.nextClaimLabel + '</span></div>' +
-            '<div class="lp-pos-meta-item"><span>Total Claimed</span><span>' + p.totalClaimed.toFixed(2) + ' ZARIX</span></div>' +
+            '<div class="lp-pos-meta-item"><span>Total Claimed</span><span>' + formatCompact(p.totalClaimed) + ' ' + UI.STRINGS.TOKEN + '</span></div>' +
           '</div>' +
 
           '<div class="lp-pos-actions">' +
-            '<button class="btn btn-primary lp-claim-btn" data-idx="' + i + '"' + (p.claimable < 0.001 ? ' disabled' : '') + '>' +
-              '💰 Claim' + (p.claimable >= 0.01 ? ' ~' + p.claimable.toFixed(2) + ' ZARIX' : '') +
+            '<button class="btn btn-primary lp-claim-btn" data-idx="' + i + '"' + (p.claimable < UI.THRESHOLDS.MIN_CLAIMABLE ? ' disabled' : '') + '>' +
+              '💰 Claim' + (p.claimable >= UI.THRESHOLDS.MIN_CLAIMABLE ? ' ' + formatPrecise(p.claimable) + ' ' + UI.STRINGS.TOKEN : '') +
             '</button>' +
             (p.isLocked
               ? '<button class="btn btn-outline" disabled title="Locked until ' + p.lockEndDate + '">🔒 Locked</button>'
-              : '<button class="btn btn-outline lp-unstake-btn" data-idx="' + i + '">📤 Unstake ' + p.lpAmt.toFixed(4) + ' LP</button>') +
+              : '<button class="btn btn-outline lp-unstake-btn" data-idx="' + i + '">📤 Unstake ' + formatPrecise(p.lpAmt) + ' ' + UI.STRINGS.LP + '</button>') +
           '</div>' +
         '</div>';
       }).join('');
@@ -781,7 +771,7 @@
     if (!pos || !state.publicKey || !state.wallet) return;
 
     const lpAmt = Number(pos.lpAmount) / ZARIX.LAMPORTS_PER_TOKEN;
-    if (!confirm('Unstake ' + lpAmt.toFixed(4) + ' LP from this position?')) return;
+    if (!confirm('Unstake ' + formatPrecise(lpAmt) + ' ' + UI.STRINGS.LP + ' from this position?')) return;
 
     const loading = showToast('Processing LP Unstake...', 'loading');
     try {
@@ -804,6 +794,9 @@
       return;
     }
 
+    const now = Math.floor(Date.now() / 1000);
+    const cooldownSecs = state.programState ? Number(state.programState.claimPeriodSeconds) : ZARIX.SECONDS_PER_DAY;
+
     container.innerHTML = state.userStakes.map(s => {
       const amt = Number(s.amount) / ZARIX.LAMPORTS_PER_TOKEN;
       const withdrawn = Number(s.totalWithdrawn) / ZARIX.LAMPORTS_PER_TOKEN;
@@ -815,11 +808,19 @@
       const isPending = s.isPending;
       const idx = Number(s.stakeIndex);
 
+      const lastClaim = Number(s.lastClaimTimestamp);
+      const elapsed = lastClaim > 0 ? (now - lastClaim) : Infinity;
+      const cooldownActive = elapsed < cooldownSecs;
+      const cooldownRemaining = cooldownActive ? cooldownSecs - elapsed : 0;
+      const cooldownLabel = formatDuration(cooldownRemaining);
+      const claimDisabled = claimable < UI.THRESHOLDS.MIN_CLAIMABLE || cooldownActive;
+      const claimTitle = cooldownActive ? 'Cooldown: ~' + cooldownLabel + ' remaining' : '';
+
       return '<div class="stake-card">' +
         '<div class="stake-index">#' + idx + '</div>' +
         '<div class="stake-info">' +
           '<div class="stake-info-label">Staked</div>' +
-          '<div class="stake-info-value">' + Math.floor(remaining).toLocaleString() + ' ZARIX</div>' +
+          '<div class="stake-info-value">' + Math.floor(remaining).toLocaleString() + ' ' + UI.STRINGS.TOKEN + '</div>' +
         '</div>' +
         '<div class="stake-info">' +
           '<div class="stake-info-label">Lock</div>' +
@@ -830,17 +831,32 @@
         '</div>' +
         '<div class="stake-info">' +
           '<div class="stake-info-label">Claimable</div>' +
-          '<div class="stake-info-value claimable-value">' + claimable.toFixed(2) + ' ZARIX</div>' +
+          '<div class="stake-info-value claimable-value">' + formatPrecise(claimable) + ' ' + UI.STRINGS.TOKEN + '</div>' +
         '</div>' +
         '<div class="stake-actions">' +
-          '<button class="btn btn-sm btn-success" onclick="window._claim(' + idx + ')" ' + (claimable < 0.001 ? 'disabled' : '') + '>Claim</button>' +
-          '<button class="btn btn-sm btn-danger" onclick="window._unstake(' + idx + ')" ' + (status === 'locked' ? 'disabled title="Lock not expired"' : '') + '>Unstake</button>' +
+          '<button class="btn btn-sm btn-success stake-claim-btn" data-idx="' + idx + '" ' + (claimDisabled ? 'disabled' : '') + (claimTitle ? ' title="' + claimTitle + '"' : '') + '>' +
+            (cooldownActive ? '⏳ ' + cooldownLabel : 'Claim') +
+          '</button>' +
+          '<button class="btn btn-sm btn-danger stake-unstake-btn" data-idx="' + idx + '" ' + (status === 'locked' ? 'disabled title="Lock not expired"' : '') + '>Unstake</button>' +
         '</div>' +
       '</div>';
     }).join('');
+
+    container.querySelectorAll('.stake-claim-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const idx = parseInt(btn.dataset.idx);
+        window._claim(idx);
+      });
+    });
+    container.querySelectorAll('.stake-unstake-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const idx = parseInt(btn.dataset.idx);
+        window._unstake(idx);
+      });
+    });
   }
   function updateStakeForm() {
-    document.getElementById('stake-balance-hint').textContent = 'Available: ' + Math.floor(state.tokenBalance).toLocaleString() + ' ZARIX';
+    document.getElementById('stake-balance-hint').textContent = 'Available: ' + Math.floor(state.tokenBalance).toLocaleString() + ' ' + UI.STRINGS.TOKEN;
     updatePreview();
   }
 
@@ -850,7 +866,7 @@
     const multiplier = getVotingMultiplier(days);
     const votingPower = amount * multiplier;
 
-    document.getElementById('preview-multiplier').textContent = multiplier.toFixed(1) + 'x';
+    document.getElementById('preview-multiplier').textContent = multiplier.toFixed(UI.DECIMALS.MULTIPLIER) + 'x';
     document.getElementById('preview-voting-power').textContent = Math.floor(votingPower).toLocaleString();
 
     const ps = state.programState;
@@ -858,11 +874,11 @@
       const totalNet = Number(ps.totalNetworkStaked) / ZARIX.LAMPORTS_PER_TOKEN;
       const { phase, stakerPct } = getHalvingCtx();
       const daily = calculateEstimatedDaily(amount, totalNet + amount, phase, stakerPct);
-      document.getElementById('preview-daily').textContent = '~' + daily.toFixed(2) + ' ZARIX';
+      document.getElementById('preview-daily').textContent = '~' + formatCompact(daily) + ' ' + UI.STRINGS.TOKEN;
     }
 
     const lockEndDate = new Date(Date.now() + days * ZARIX.SECONDS_PER_DAY * 1000);
-    document.getElementById('preview-lock-end').textContent = lockEndDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    document.getElementById('preview-lock-end').textContent = lockEndDate.toLocaleDateString('en-US', UI.DATE_FORMAT);
 
     const minStake = state.programState ? Number(state.programState.minStakeAmount) / ZARIX.LAMPORTS_PER_TOKEN : ZARIX.DEFAULT_MIN_STAKE;
     const btn = document.getElementById('btn-stake');
@@ -882,15 +898,15 @@
       btn.disabled = true;
       btn.textContent = '⚠️ Below Minimum';
       statusEl.className = 'form-status error';
-      statusEl.textContent = 'Minimum stake: ' + Math.floor(minStake).toLocaleString() + ' ZARIX';
+      statusEl.textContent = 'Minimum stake: ' + Math.floor(minStake).toLocaleString() + ' ' + UI.STRINGS.TOKEN;
     } else if (amount > state.tokenBalance) {
       btn.disabled = true;
       btn.textContent = '⚠️ Insufficient Balance';
       statusEl.className = 'form-status error';
-      statusEl.textContent = 'You have ' + Math.floor(state.tokenBalance).toLocaleString() + ' ZARIX';
+      statusEl.textContent = 'You have ' + Math.floor(state.tokenBalance).toLocaleString() + ' ' + UI.STRINGS.TOKEN;
     } else {
       btn.disabled = false;
-      btn.textContent = '🔒 Stake ' + Math.floor(amount).toLocaleString() + ' ZARIX';
+      btn.textContent = '🔒 Stake ' + Math.floor(amount).toLocaleString() + ' ' + UI.STRINGS.TOKEN;
       statusEl.className = 'form-status';
       statusEl.textContent = '';
     }
@@ -950,20 +966,16 @@
       await pollConfirmation(sig);
 
       statusEl.className = 'form-status success';
-      statusEl.textContent = '✅ Staked ' + amount.toLocaleString() + ' ZARIX successfully!';
-      showToast('Staked ' + amount.toLocaleString() + ' ZARIX!', 'success');
+      statusEl.textContent = '✅ Staked ' + amount.toLocaleString() + ' ' + UI.STRINGS.TOKEN + ' successfully!';
+      showToast('Staked ' + amount.toLocaleString() + ' ' + UI.STRINGS.TOKEN + '!', 'success');
 
       document.getElementById('stake-amount').value = '';
       await refreshAll();
     } catch(e) {
       console.error('Stake error:', e);
       statusEl.className = 'form-status error';
-      if (e.message?.includes('rejected')) {
-        statusEl.textContent = 'Transaction rejected by user';
-      } else {
-        statusEl.textContent = '❌ ' + (e.message || 'Transaction failed');
-      }
-      showToast('Stake failed: ' + e.message, 'error');
+      statusEl.textContent = handleTxError(e, 'Stake');
+      showToast(handleTxError(e, 'Stake'), 'error');
     }
   }
   async function doClaim(stakeIndex) {
@@ -980,11 +992,15 @@
       loading.remove();
       console.error('Claim:', e);
       if (e.message?.includes('rejected')) {
-        showToast('Transaction rejected', 'error');
-      } else if (e.message?.includes('0x80') || e.message?.includes('128')) {
-        showToast('Claim cooldown active. Try again later.', 'error');
+        showToast(handleTxError(e, 'Claim'), 'error');
+      } else if (e.message?.includes('0x80') || e.message?.includes('cooldown')) {
+        const match = e.message?.match(/Wait (\d+) more seconds/);
+        const secs = match ? parseInt(match[1]) : 0;
+        const timeStr = secs > 0 ? formatDuration(secs) : '';
+        showToast('Claim cooldown active.' + (timeStr ? ' Try again in ~' + timeStr + '.' : ' Try again later.'), 'error');
+        await refreshAll();
       } else {
-        showToast('Claim failed: ' + e.message, 'error');
+        showToast(handleTxError(e, 'Claim'), 'error');
       }
     }
   }
@@ -995,7 +1011,7 @@
       showToast('Lock period not expired yet!', 'error');
       return;
     }
-    if (!confirm('Are you sure you want to unstake? This will return your ZARIX tokens.')) return;
+    if (!confirm('Are you sure you want to unstake? This will return your ' + UI.STRINGS.TOKEN + ' tokens.')) return;
 
     const loading = showToast('Processing unstake...', 'loading');
     try {
@@ -1008,7 +1024,7 @@
     } catch(e) {
       loading.remove();
       console.error('Unstake:', e);
-      showToast('Unstake failed: ' + (e.message?.includes('rejected') ? 'Rejected by user' : e.message), 'error');
+      showToast(handleTxError(e, 'Unstake'), 'error');
     }
   }
   window._claim = doClaim;
@@ -1022,21 +1038,21 @@
 
     if (rawUrl.startsWith('http') && !rawUrl.includes('127.0.0.1:3847')) {
       try {
-        await fetch('/api/rpc/set', {
+        await fetch(UI.APP.API_SET_RPC, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ rpc_url: rawUrl }),
         });
-        state.rpcUrl = 'http://127.0.0.1:3847/api/rpc';
-        localStorage.setItem('zarix_rpc', 'http://127.0.0.1:3847/api/rpc');
-        localStorage.setItem('zarix_rpc_target', rawUrl);
+        state.rpcUrl = UI.APP.PROXY_URL;
+        localStorage.setItem(UI.STORAGE.RPC_URL, UI.APP.PROXY_URL);
+        localStorage.setItem(UI.STORAGE.RPC_TARGET, rawUrl);
       } catch(e) {
         showToast('Failed to update proxy: ' + e.message, 'error');
         return;
       }
     } else {
       state.rpcUrl = rawUrl;
-      localStorage.setItem('zarix_rpc', rawUrl);
+      localStorage.setItem(UI.STORAGE.RPC_URL, rawUrl);
     }
 
     initConnection();
@@ -1045,17 +1061,17 @@
   });
 
   document.getElementById('btn-reset-rpc').addEventListener('click', async () => {
-    const defaultRpc = 'https://api.mainnet-beta.solana.com';
+    const defaultRpc = UI.APP.DEFAULT_SOLANA_RPC;
     try {
-      await fetch('/api/rpc/set', {
+      await fetch(UI.APP.API_SET_RPC, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ rpc_url: defaultRpc }),
       });
     } catch(e) {}
-    localStorage.removeItem('zarix_rpc_target');
-    localStorage.setItem('zarix_rpc', 'http://127.0.0.1:3847/api/rpc');
-    state.rpcUrl = 'http://127.0.0.1:3847/api/rpc';
+    localStorage.removeItem(UI.STORAGE.RPC_TARGET);
+    localStorage.setItem(UI.STORAGE.RPC_URL, UI.APP.PROXY_URL);
+    state.rpcUrl = UI.APP.PROXY_URL;
     document.getElementById('rpc-url').value = defaultRpc;
     initConnection();
     showToast('RPC reset to Solana Public', 'success', 3000);
@@ -1085,7 +1101,7 @@
     statusEl.textContent = 'Shutting down...';
 
     try {
-      await fetch('/api/shutdown', { method: 'POST' });
+      await fetch(UI.APP.API_SHUTDOWN, { method: 'POST' });
       statusEl.className = 'form-status success';
       statusEl.textContent = '✅ Server stopped. You can close this tab.';
       document.title = 'ZARIX LOCAL — Stopped';
@@ -1121,7 +1137,7 @@
     if (!gauge) return;
     const mint = gauge.poolMint.toString();
     const bal = state.lpBalances[mint] || 0;
-    document.getElementById('lp-amount-input').value = bal.toFixed(4);
+    document.getElementById('lp-amount-input').value = formatPrecise(bal);
   });
 
   document.getElementById('btn-lp-stake').addEventListener('click', async () => {
@@ -1221,6 +1237,6 @@
     if (provider?.isConnected) {
       connectWallet();
     }
-  }, 500);
+  }, UI.TIME.AUTO_CONNECT_DELAY_MS);
 
 })();

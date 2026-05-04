@@ -55,6 +55,93 @@ const ZARIX = {
   },
 };
 
+const UI = {
+  DECIMALS: {
+    PRECISE: 4,
+    COMPACT: 2,
+    MULTIPLIER: 1,
+  },
+
+  THRESHOLDS: {
+    MIN_CLAIMABLE: 0.001,
+  },
+
+  TIME: {
+    SECONDS_PER_MINUTE: 60,
+    SECONDS_PER_HOUR: 3600,
+    SECONDS_PER_WEEK: 604800,
+    POLL_INTERVAL_MS: 2000,
+    POLL_MAX_RETRIES: 30,
+    REFRESH_INTERVAL_MS: 120000,
+    AUTO_CONNECT_DELAY_MS: 500,
+  },
+
+  STRINGS: {
+    TOKEN: 'ZARIX',
+    LP: 'LP',
+  },
+
+  DATE_FORMAT: { month: 'short', day: 'numeric', year: 'numeric' },
+
+  APP: {
+    PROXY_URL: 'http://127.0.0.1:3847/api/rpc',
+    API_SET_RPC: '/api/rpc/set',
+    API_SHUTDOWN: '/api/shutdown',
+    DEFAULT_SOLANA_RPC: 'https://api.mainnet-beta.solana.com',
+    EXPLORER_BASE: 'https://solscan.io',
+  },
+
+  STORAGE: {
+    RPC_URL: 'zarix_rpc',
+    RPC_TARGET: 'zarix_rpc_target',
+  },
+
+  PREMIUM_RPC_PROVIDERS: ['helius', 'quicknode', 'alchemy', 'triton'],
+
+  KNOWN_DEX_PROGRAMS: {
+    'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK': 'Liquidity',
+    '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8': 'Swap',
+    'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc': 'Swap',
+    'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4': 'Swap',
+    'routeUGWgWzqBWFcrCfv8tritsqukccJPu3q5GPP3xS': 'Swap',
+  },
+
+  EXCLUDED_LP_MINTS: new Set([
+    'So11111111111111111111111111111111111111112',
+    'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
+    'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+  ]),
+};
+
+function formatPrecise(value) {
+  return Number(value).toFixed(UI.DECIMALS.PRECISE);
+}
+
+function formatCompact(value) {
+  return Number(value).toFixed(UI.DECIMALS.COMPACT);
+}
+
+function formatDuration(seconds) {
+  const h = Math.floor(seconds / UI.TIME.SECONDS_PER_HOUR);
+  const m = Math.ceil((seconds % UI.TIME.SECONDS_PER_HOUR) / UI.TIME.SECONDS_PER_MINUTE);
+  return h > 0 ? h + 'h ' + m + 'm' : m + 'm';
+}
+
+function explorerTxUrl(sig) {
+  return UI.APP.EXPLORER_BASE + '/tx/' + sig;
+}
+
+function explorerAccountUrl(addr) {
+  return UI.APP.EXPLORER_BASE + '/account/' + addr;
+}
+
+function handleTxError(e, context) {
+  if (e.message?.includes('rejected')) {
+    return 'Transaction rejected by user';
+  }
+  return context + ' failed: ' + (e.message || 'Unknown error');
+}
+
 const InstructionType = {
   Initialize: 0,
   Stake: 1,
