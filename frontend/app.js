@@ -148,14 +148,62 @@
   function getProvider() {
     if (window.phantom?.solana?.isPhantom) return window.phantom.solana;
     if (window.solana?.isPhantom) return window.solana;
+    if (window.jupiter?.solana) return window.jupiter.solana;
     if (window.solflare?.isSolflare) return window.solflare;
     return null;
+  }
+
+  function getDetectedWalletName() {
+    if (window.phantom?.solana?.isPhantom || window.solana?.isPhantom) return 'Phantom';
+    if (window.jupiter?.solana) return 'Jupiter';
+    if (window.solflare?.isSolflare) return 'Solflare';
+    return null;
+  }
+
+  function showWalletInstallModal() {
+    const existing = document.getElementById('wallet-install-modal');
+    if (existing) existing.remove();
+
+    const overlay = document.createElement('div');
+    overlay.id = 'wallet-install-modal';
+    overlay.className = 'wallet-modal-overlay';
+    overlay.innerHTML =
+      '<div class="wallet-modal glass-card">' +
+        '<button class="wallet-modal-close" id="wallet-modal-close">✕</button>' +
+        '<div class="wallet-modal-icon">🔌</div>' +
+        '<h2>Wallet Required</h2>' +
+        '<p>Install a Solana wallet extension to connect. Your keys stay safe in the extension — ZARIX never touches them.</p>' +
+        '<div class="wallet-modal-options">' +
+          '<a href="https://chrome.google.com/webstore/detail/phantom/bfnaelmomeimhlpmgjnjophhpkkoljpa" target="_blank" rel="noopener" class="wallet-option">' +
+            '<div class="wallet-option-icon">👻</div>' +
+            '<div class="wallet-option-info">' +
+              '<strong>Phantom</strong>' +
+              '<span>Most popular Solana wallet</span>' +
+            '</div>' +
+            '<span class="wallet-option-badge">Recommended</span>' +
+          '</a>' +
+          '<a href="https://chrome.google.com/webstore/detail/jupiter/cahgpbdpcmcojmackchfkoapghijbfag" target="_blank" rel="noopener" class="wallet-option">' +
+            '<div class="wallet-option-icon">🪐</div>' +
+            '<div class="wallet-option-info">' +
+              '<strong>Jupiter</strong>' +
+              '<span>Built-in swap + wallet</span>' +
+            '</div>' +
+            '<span class="wallet-option-badge secondary">Alternative</span>' +
+          '</a>' +
+        '</div>' +
+        '<p class="wallet-modal-hint">After installing, refresh this app to connect.</p>' +
+      '</div>';
+
+    document.body.appendChild(overlay);
+
+    document.getElementById('wallet-modal-close').addEventListener('click', () => overlay.remove());
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
   }
 
   async function connectWallet() {
     const provider = getProvider();
     if (!provider) {
-      showToast('No wallet found! Install Phantom or Solflare.', 'error');
+      showWalletInstallModal();
       return;
     }
     try {
@@ -170,9 +218,11 @@
       document.getElementById('connect-prompt').classList.add('hidden');
       document.getElementById('dashboard-content').classList.remove('hidden');
 
-      showToast('Wallet connected!', 'success', 3000);
+      const walletName = getDetectedWalletName() || 'Wallet';
+      showToast(walletName + ' connected!', 'success', 3000);
       await refreshAll();
 
+      if (state.refreshInterval) clearInterval(state.refreshInterval);
       state.refreshInterval = setInterval(refreshAll, UI.TIME.REFRESH_INTERVAL_MS); 
     } catch(e) {
       showToast('Connection rejected', 'error');
@@ -493,8 +543,12 @@
           const mint = gauges[i].poolMint.toString();
           if (ataInfos[i]) {
             try {
-              const rawAmount = ataInfos[i].data.readBigUInt64LE(64); // SPL Token amount at offset 64
-              state.lpBalances[mint] = Number(rawAmount) / ZARIX.LAMPORTS_PER_TOKEN;
+              if (ataInfos[i].data.length >= 72) {
+                const rawAmount = ataInfos[i].data.readBigUInt64LE(64); // SPL Token amount at offset 64
+                state.lpBalances[mint] = Number(rawAmount) / ZARIX.LAMPORTS_PER_TOKEN;
+              } else {
+                state.lpBalances[mint] = 0;
+              }
             } catch(e) { state.lpBalances[mint] = 0; }
           } else {
             state.lpBalances[mint] = 0;

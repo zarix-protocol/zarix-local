@@ -202,8 +202,9 @@ async function fetchUserAccount(connection, userPubkey) {
 
 async function fetchAllUserStakes(connection, userPubkey) {
   const userAccount = await fetchUserAccount(connection, userPubkey);
-  let count = userAccount ? Number(userAccount.nextStakeIndex) : 0;
-  if (count === 0) count = 5;
+  if (!userAccount) return [];
+  const count = Number(userAccount.nextStakeIndex);
+  if (count === 0) return [];
 
   const pdas = [];
   for (let i = 0n; i < BigInt(count); i++) {
@@ -315,16 +316,7 @@ function createUnstakeInstruction(userPubkey, userTokenAccount, stakeIndex) {
     data: data,
   });
 }
-async function ensureTokenAccount(connection, wallet, mint) {
-  const ata = getAssociatedTokenAddressSync(mint, wallet, false);
-  try {
-    await getAccount(connection, ata);
-    return ata;
-  } catch(e) {
-    // Need to create ATA
-    return ata;
-  }
-}
+
 
 // LP staking PDAs
 function getLPGaugePDA(lpTokenMint) {

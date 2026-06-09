@@ -4,7 +4,7 @@ Standalone desktop staking tool for ZARIX tokens on Solana. Single executable, r
 
 ## What is this?
 
-A lightweight desktop app for managing your ZARIX staking positions. It runs a local server on `localhost:3847`, opens your browser, and talks directly to Solana — no backend, no accounts, no middleman.
+A lightweight desktop app for managing your ZARIX staking positions. It runs a local server and opens in standalone app mode (no browser tabs/URL bar) — talks directly to Solana with no backend, no accounts, no middleman.
 
 **What you can do:**
 - Stake ZARIX with 1–7 year lock periods
@@ -32,7 +32,7 @@ chmod +x zarix-local
 zarix-local.exe
 ```
 
-Your browser opens to `http://localhost:3847`. Connect Phantom or Solflare and you're in.
+Opens in standalone app mode (Chrome/Edge). If no Chromium browser is found, falls back to your default browser. Connect Phantom or Jupiter wallet and you're in.
 
 ### Build from source
 
@@ -56,7 +56,7 @@ Binaries go to `dist/`.
 ## How it works
 
 ```
-Browser (localhost:3847)
+Standalone App Window (Chrome --app mode)
     ↕ HTTP
 Rust server (actix-web, embedded frontend)
     ↕ HTTPS
@@ -64,16 +64,28 @@ Solana RPC (mainnet-beta or custom)
 ```
 
 - The Rust binary embeds the frontend at compile time and serves it on `127.0.0.1:3847`
+- Opens in Chrome/Edge app mode for a native desktop feel (no tabs, no URL bar)
 - All Solana RPC calls go through a local proxy to avoid browser CORS issues
-- Transaction signing is handled entirely by your wallet extension (Phantom/Solflare)
+- Transaction signing is handled entirely by your wallet extension (Phantom/Jupiter)
 - The server is stateless — nothing is stored on disk, no telemetry, no analytics
 - Private keys never leave your wallet
+
+## Wallet Support
+
+| Wallet | Status |
+|--------|--------|
+| **Phantom** | ✅ Recommended |
+| **Jupiter** | ✅ Supported |
+| **Solflare** | ✅ Supported |
+
+If no wallet is detected, the app shows an install prompt with direct links to the Chrome Web Store.
 
 ## Security
 
 - **Keys** — never touched by this app. Your wallet extension handles all signing.
 - **Network** — server binds to `127.0.0.1` only, not accessible from other machines
-- **RPC proxy** — validates URLs, blocks private/internal IPs, disables HTTP redirects
+- **Origin validation** — all API endpoints verify request origin to prevent CSRF attacks
+- **RPC proxy** — validates URLs, blocks private/internal IPs, HTTPS-only, no redirects
 - **Storage** — stateless server. Browser stores only your RPC URL preference in localStorage
 - **CSP** — Content Security Policy restricts scripts, styles, and network connections
 - **No telemetry**, no auto-update, no phoning home
@@ -102,4 +114,4 @@ sha256sum -c SHA256SUMS.txt
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE)

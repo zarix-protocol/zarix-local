@@ -7,7 +7,7 @@ use rust_embed::Embed;
 use std::net::TcpListener;
 use std::sync::RwLock;
 
-const VERSION: &str = "1.0.0";
+const VERSION: &str = "1.1.0";
 const HOST: &str = "127.0.0.1";
 const PORT: u16 = 3847;
 const DEFAULT_RPC: &str = "https://api.mainnet-beta.solana.com";
@@ -25,13 +25,39 @@ struct AppState {
     http: Client,
 }
 
-async fn rpc_proxy(body: web::Bytes, data: web::Data<AppState>) -> HttpResponse {
+fn is_valid_origin(req: &HttpRequest) -> bool {
+    match req.headers().get("origin") {
+        Some(origin) => {
+            let o = origin.to_str().unwrap_or("");
+            o == format!("http://{}:{}", HOST, PORT)
+                || o == format!("http://localhost:{}", PORT)
+        }
+        None => {
+            // Allow requests with no Origin header only if Referer matches
+            // (same-origin XHR from app mode won't always send Origin)
+            match req.headers().get("referer") {
+                Some(referer) => {
+                    let r = referer.to_str().unwrap_or("");
+                    r.starts_with(&format!("http://{}:{}", HOST, PORT))
+                        || r.starts_with(&format!("http://localhost:{}", PORT))
+                }
+                None => false,
+            }
+        }
+    }
+}
+
+async fn rpc_proxy(req: HttpRequest, body: web::Bytes, data: web::Data<AppState>) -> HttpResponse {
+    if !is_valid_origin(&req) {
+        return HttpResponse::Forbidden().json(serde_json::json!({"error": "Forbidden"}));
+    }
+
     if body.len() > MAX_REQUEST_BYTES {
         return HttpResponse::PayloadTooLarge()
             .json(serde_json::json!({"error": "Request body too large"}));
     }
 
-    let rpc_url = data.rpc_url.read().unwrap().clone();
+    let rpc_url = data.rpc_url.read().unwrap_or_else(|e| e.into_inner()).clone();
 
     match data
         .http
@@ -58,7 +84,11 @@ async fn rpc_proxy(body: web::Bytes, data: web::Data<AppState>) -> HttpResponse 
     }
 }
 
-async fn set_rpc(body: web::Json<serde_json::Value>, data: web::Data<AppState>) -> HttpResponse {
+async fn set_rpc(req: HttpRequest, body: web::Json<serde_json::Value>, data: web::Data<AppState>) -> HttpResponse {
+    if !is_valid_origin(&req) {
+        return HttpResponse::Forbidden().json(serde_json::json!({"error": "Forbidden"}));
+    }
+
     if let Some(url) = body.get("rpc_url").and_then(|v| v.as_str()) {
         let url_lower = url.to_lowercase();
 
@@ -83,7 +113,16 @@ async fn set_rpc(body: web::Json<serde_json::Value>, data: web::Data<AppState>) 
             || url_lower.contains("172.17.")
             || url_lower.contains("172.18.")
             || url_lower.contains("172.19.")
-            || url_lower.contains("172.2")
+            || url_lower.contains("172.20.")
+            || url_lower.contains("172.21.")
+            || url_lower.contains("172.22.")
+            || url_lower.contains("172.23.")
+            || url_lower.contains("172.24.")
+            || url_lower.contains("172.25.")
+            || url_lower.contains("172.26.")
+            || url_lower.contains("172.27.")
+            || url_lower.contains("172.28.")
+            || url_lower.contains("172.29.")
             || url_lower.contains("172.30.")
             || url_lower.contains("172.31.")
             || url_lower.contains("169.254.");
@@ -100,7 +139,7 @@ async fn set_rpc(body: web::Json<serde_json::Value>, data: web::Data<AppState>) 
             );
         }
 
-        let mut rpc = data.rpc_url.write().unwrap();
+        let mut rpc = data.rpc_url.write().unwrap_or_else(|e| e.into_inner());
         *rpc = url.to_string();
         HttpResponse::Ok().json(serde_json::json!({"ok": true}))
     } else {
@@ -109,11 +148,8 @@ async fn set_rpc(body: web::Json<serde_json::Value>, data: web::Data<AppState>) 
 }
 
 async fn shutdown(req: HttpRequest) -> HttpResponse {
-    if let Some(origin) = req.headers().get("origin") {
-        let o = origin.to_str().unwrap_or("");
-        if o != format!("http://{}:{}", HOST, PORT) && o != format!("http://localhost:{}", PORT) {
-            return HttpResponse::Forbidden().json(serde_json::json!({"error": "Forbidden"}));
-        }
+    if !is_valid_origin(&req) {
+        return HttpResponse::Forbidden().json(serde_json::json!({"error": "Forbidden"}));
     }
     tokio::spawn(async {
         tokio::time::sleep(std::time::Duration::from_millis(SHUTDOWN_DELAY_MS)).await;
@@ -163,6 +199,100 @@ async fn serve_embedded(req: HttpRequest) -> HttpResponse {
     }
 }
 
+fn find_browser() -> Option<String> {
+    #[cfg(target_os = "windows")]
+    {
+        let candidates = [
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+            r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
+        ];
+        for path in &candidates {
+            if std::path::Path::new(path).exists() {
+                return Some(path.to_string());
+            }
+        }
+        // Try PATH-based lookup on Windows
+        for cmd in &["chrome", "msedge", "brave"] {
+            if std::process::Command::new("where")
+                .arg(cmd)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+            {
+                return Some(cmd.to_string());
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let app_paths = [
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+            "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+        ];
+        for path in &app_paths {
+            if std::path::Path::new(path).exists() {
+                return Some(path.to_string());
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let commands = [
+            "google-chrome",
+            "google-chrome-stable",
+            "chromium-browser",
+            "chromium",
+            "microsoft-edge",
+            "brave-browser",
+        ];
+        for cmd in &commands {
+            if std::process::Command::new("which")
+                .arg(cmd)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+            {
+                return Some(cmd.to_string());
+            }
+        }
+    }
+
+    None
+}
+
+fn launch_app_window(url: &str) {
+    if let Some(browser) = find_browser() {
+        let app_flag = format!("--app={}", url);
+        let result = std::process::Command::new(&browser)
+            .args([&app_flag, "--window-size=1280,860", "--new-window"])
+            .spawn();
+
+        match result {
+            Ok(_) => {
+                println!("Launched in app mode ✓");
+                return;
+            }
+            Err(e) => {
+                eprintln!("App mode failed ({}), falling back to browser...", e);
+            }
+        }
+    } else {
+        eprintln!("No Chrome/Edge found — opening in default browser...");
+    }
+
+    // Fallback to default browser
+    if let Err(e) = open::that(url) {
+        eprintln!("Could not open browser: {} — open {} manually", e, url);
+    }
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     let addr = format!("{}:{}", HOST, PORT);
@@ -179,9 +309,7 @@ async fn main() -> std::io::Result<()> {
     let url = format!("http://{}:{}", HOST, PORT);
     println!("Zarix Local v{} — http://{}:{}", VERSION, HOST, PORT);
 
-    if let Err(e) = open::that(&url) {
-        eprintln!("Could not open browser: {} — open {} manually", e, url);
-    }
+    launch_app_window(&url);
 
     let app_state = web::Data::new(AppState {
         rpc_url: RwLock::new(DEFAULT_RPC.to_string()),
