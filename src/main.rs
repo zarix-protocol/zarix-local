@@ -7,7 +7,7 @@ use rust_embed::Embed;
 use std::net::TcpListener;
 use std::sync::RwLock;
 
-const VERSION: &str = "1.1.0";
+const VERSION: &str = "1.1.1";
 const HOST: &str = "127.0.0.1";
 const PORT: u16 = 3847;
 const DEFAULT_RPC: &str = "https://api.mainnet-beta.solana.com";
@@ -29,8 +29,7 @@ fn is_valid_origin(req: &HttpRequest) -> bool {
     match req.headers().get("origin") {
         Some(origin) => {
             let o = origin.to_str().unwrap_or("");
-            o == format!("http://{}:{}", HOST, PORT)
-                || o == format!("http://localhost:{}", PORT)
+            o == format!("http://{}:{}", HOST, PORT) || o == format!("http://localhost:{}", PORT)
         }
         None => {
             // Allow requests with no Origin header only if Referer matches
@@ -57,7 +56,11 @@ async fn rpc_proxy(req: HttpRequest, body: web::Bytes, data: web::Data<AppState>
             .json(serde_json::json!({"error": "Request body too large"}));
     }
 
-    let rpc_url = data.rpc_url.read().unwrap_or_else(|e| e.into_inner()).clone();
+    let rpc_url = data
+        .rpc_url
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
 
     match data
         .http
@@ -84,7 +87,11 @@ async fn rpc_proxy(req: HttpRequest, body: web::Bytes, data: web::Data<AppState>
     }
 }
 
-async fn set_rpc(req: HttpRequest, body: web::Json<serde_json::Value>, data: web::Data<AppState>) -> HttpResponse {
+async fn set_rpc(
+    req: HttpRequest,
+    body: web::Json<serde_json::Value>,
+    data: web::Data<AppState>,
+) -> HttpResponse {
     if !is_valid_origin(&req) {
         return HttpResponse::Forbidden().json(serde_json::json!({"error": "Forbidden"}));
     }
@@ -271,7 +278,7 @@ fn launch_app_window(url: &str) {
     if let Some(browser) = find_browser() {
         let app_flag = format!("--app={}", url);
         let result = std::process::Command::new(&browser)
-            .args([&app_flag, "--window-size=1280,860", "--new-window"])
+            .args([&app_flag, "--window-size=1024,680", "--new-window"])
             .spawn();
 
         match result {
