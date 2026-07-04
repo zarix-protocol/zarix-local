@@ -4,17 +4,25 @@ use actix_web::{App, HttpRequest, HttpResponse, HttpServer, web};
 use mime_guess::from_path;
 use reqwest::Client;
 use rust_embed::Embed;
+use std::io::Write;
 use std::net::TcpListener;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::RwLock;
+use std::time::{Duration, Instant};
 
-const VERSION: &str = "1.1.1";
+const VERSION: &str = "1.1.2";
 const HOST: &str = "127.0.0.1";
 const PORT: u16 = 3847;
 const DEFAULT_RPC: &str = "https://api.mainnet-beta.solana.com";
 const MAX_REQUEST_BYTES: usize = 65_536;
 const MAX_RESPONSE_BYTES: usize = 10 * 1024 * 1024;
 const RPC_TIMEOUT_SECS: u64 = 30;
-const SHUTDOWN_DELAY_MS: u64 = 500;
+const SHUTDOWN_FORCE_DELAY_MS: u64 = 500;
+const SHUTDOWN_GRACE_DELAY_MS: u64 = 3000;
+const HEARTBEAT_TIMEOUT_SECS: u64 = 45;
+const STARTUP_IDLE_TIMEOUT_SECS: u64 = 300;
+const PORT_RETRY_ATTEMPTS: u32 = 6;
+const PORT_RETRY_WAIT_MS: u64 = 800;
 
 #[derive(Embed)]
 #[folder = "frontend/"]
@@ -23,6 +31,9 @@ struct FrontendAssets;
 struct AppState {
     rpc_url: RwLock<String>,
     http: Client,
+    last_heartbeat: RwLock<Option<Instant>>,
+    started_at: Instant,
+    shutdown_generation: AtomicU64,
 }
 
 fn is_valid_origin(req: &HttpRequest) -> bool {
@@ -154,15 +165,43 @@ async fn set_rpc(
     }
 }
 
-async fn shutdown(req: HttpRequest) -> HttpResponse {
+fn schedule_shutdown(data: web::Data<AppState>, force: bool) {
+    let delay_ms = if force {
+        SHUTDOWN_FORCE_DELAY_MS
+    } else {
+        SHUTDOWN_GRACE_DELAY_MS
+    };
+    let generation = data.shutdown_generation.fetch_add(1, Ordering::SeqCst) + 1;
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        if data.shutdown_generation.load(Ordering::SeqCst) == generation {
+            std::process::exit(0);
+        }
+    });
+}
+
+async fn shutdown(req: HttpRequest, data: web::Data<AppState>) -> HttpResponse {
     if !is_valid_origin(&req) {
         return HttpResponse::Forbidden().json(serde_json::json!({"error": "Forbidden"}));
     }
-    tokio::spawn(async {
-        tokio::time::sleep(std::time::Duration::from_millis(SHUTDOWN_DELAY_MS)).await;
-        std::process::exit(0);
-    });
+    let force = req
+        .query_string()
+        .split('&')
+        .any(|part| part == "force=1" || part == "force=true");
+    schedule_shutdown(data, force);
     HttpResponse::Ok().json(serde_json::json!({"ok": true, "message": "Shutting down..."}))
+}
+
+async fn heartbeat(req: HttpRequest, data: web::Data<AppState>) -> HttpResponse {
+    if !is_valid_origin(&req) {
+        return HttpResponse::Forbidden().json(serde_json::json!({"error": "Forbidden"}));
+    }
+    data.shutdown_generation.fetch_add(1, Ordering::SeqCst);
+    *data
+        .last_heartbeat
+        .write()
+        .unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+    HttpResponse::Ok().json(serde_json::json!({"ok": true, "version": VERSION}))
 }
 
 async fn ping() -> HttpResponse {
@@ -274,6 +313,60 @@ fn find_browser() -> Option<String> {
     None
 }
 
+fn request_remote_shutdown(force: bool) {
+    let path = if force {
+        "/api/shutdown?force=1"
+    } else {
+        "/api/shutdown"
+    };
+    let request = format!(
+        "POST {path} HTTP/1.1\r\nHost: {HOST}:{PORT}\r\nOrigin: http://{HOST}:{PORT}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    );
+    if let Ok(mut stream) = std::net::TcpStream::connect(format!("{HOST}:{PORT}")) {
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+        let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+        let _ = stream.write_all(request.as_bytes());
+        let _ = stream.shutdown(std::net::Shutdown::Both);
+    }
+}
+
+fn acquire_port(addr: &str) -> bool {
+    for attempt in 0..PORT_RETRY_ATTEMPTS {
+        match TcpListener::bind(addr) {
+            Ok(listener) => {
+                drop(listener);
+                return true;
+            }
+            Err(_) if attempt + 1 < PORT_RETRY_ATTEMPTS => {
+                request_remote_shutdown(true);
+                std::thread::sleep(Duration::from_millis(PORT_RETRY_WAIT_MS));
+            }
+            Err(_) => return false,
+        }
+    }
+    false
+}
+
+fn spawn_idle_watchdog(data: web::Data<AppState>) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(10));
+        loop {
+            interval.tick().await;
+            let last = data
+                .last_heartbeat
+                .read()
+                .unwrap_or_else(|e| e.into_inner());
+            if let Some(last_seen) = *last {
+                if last_seen.elapsed() > Duration::from_secs(HEARTBEAT_TIMEOUT_SECS) {
+                    std::process::exit(0);
+                }
+            } else if data.started_at.elapsed() > Duration::from_secs(STARTUP_IDLE_TIMEOUT_SECS) {
+                std::process::exit(0);
+            }
+        }
+    });
+}
+
 fn launch_app_window(url: &str) {
     if let Some(browser) = find_browser() {
         let app_flag = format!("--app={}", url);
@@ -304,12 +397,11 @@ fn launch_app_window(url: &str) {
 async fn main() -> std::io::Result<()> {
     let addr = format!("{}:{}", HOST, PORT);
 
-    if TcpListener::bind(&addr).is_err() {
+    if !acquire_port(&addr) {
         eprintln!(
-            "Port {} already in use — is another instance running?",
+            "Port {} is still in use — close the other Zarix Local instance and try again.",
             PORT
         );
-        eprintln!("Open http://{}:{} in your browser.", HOST, PORT);
         std::process::exit(1);
     }
 
@@ -324,7 +416,12 @@ async fn main() -> std::io::Result<()> {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("http client"),
+        last_heartbeat: RwLock::new(None),
+        started_at: Instant::now(),
+        shutdown_generation: AtomicU64::new(0),
     });
+
+    spawn_idle_watchdog(app_state.clone());
 
     HttpServer::new(move || {
         App::new()
@@ -332,6 +429,7 @@ async fn main() -> std::io::Result<()> {
             .route("/api/rpc", web::post().to(rpc_proxy))
             .route("/api/rpc/set", web::post().to(set_rpc))
             .route("/api/shutdown", web::post().to(shutdown))
+            .route("/api/heartbeat", web::post().to(heartbeat))
             .route("/api/ping", web::get().to(ping))
             .route("/{filename:.*}", web::get().to(serve_embedded))
     })

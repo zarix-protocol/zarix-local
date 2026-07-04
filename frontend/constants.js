@@ -74,6 +74,7 @@ const UI = {
     POLL_MAX_RETRIES: 30,
     REFRESH_INTERVAL_MS: 120000,
     AUTO_CONNECT_DELAY_MS: 500,
+    HEARTBEAT_INTERVAL_MS: 15000,
   },
 
   STRINGS: {
@@ -87,6 +88,7 @@ const UI = {
     PROXY_URL: 'http://127.0.0.1:3847/api/rpc',
     API_SET_RPC: '/api/rpc/set',
     API_SHUTDOWN: '/api/shutdown',
+    API_HEARTBEAT: '/api/heartbeat',
     DEFAULT_SOLANA_RPC: 'https://api.mainnet-beta.solana.com',
     EXPLORER_BASE: 'https://solscan.io',
   },

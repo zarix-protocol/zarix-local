@@ -1147,23 +1147,45 @@
     }
   });
   document.getElementById('btn-quit-app').addEventListener('click', async () => {
-    const confirmed = confirm('Are you sure you want to quit ZARIX Local?\n\nThe server will stop and this page will become unresponsive.');
+    const confirmed = confirm('Are you sure you want to quit ZARIX Local?\n\nThe server will stop and this window will close.');
     if (!confirmed) return;
 
+    window.__zarixQuitting = true;
     const statusEl = document.getElementById('quit-status');
     statusEl.className = 'form-status loading';
     statusEl.textContent = 'Shutting down...';
 
     try {
-      await fetch(UI.APP.API_SHUTDOWN, { method: 'POST' });
+      await fetch(UI.APP.API_SHUTDOWN + '?force=1', { method: 'POST' });
       statusEl.className = 'form-status success';
-      statusEl.textContent = '✅ Server stopped. You can close this tab.';
+      statusEl.textContent = '✅ Server stopped. You can close this window.';
       document.title = 'ZARIX LOCAL — Stopped';
-      showToast('Application stopped. You can close this tab now.', 'info', 30000);
+      showToast('Application stopped. You can close this window now.', 'info', 30000);
     } catch(e) {
       statusEl.className = 'form-status success';
-      statusEl.textContent = '✅ Server stopped. You can close this tab.';
+      statusEl.textContent = '✅ Server stopped. You can close this window.';
     }
+  });
+
+  function sendHeartbeat() {
+    fetch(UI.APP.API_HEARTBEAT, { method: 'POST' }).catch(() => {});
+  }
+
+  function requestGracefulShutdown() {
+    if (window.__zarixQuitting) return;
+    const url = UI.APP.API_SHUTDOWN;
+    if (navigator.sendBeacon) {
+      navigator.sendBeacon(url, '');
+    } else {
+      fetch(url, { method: 'POST', keepalive: true }).catch(() => {});
+    }
+  }
+
+  sendHeartbeat();
+  setInterval(sendHeartbeat, UI.TIME.HEARTBEAT_INTERVAL_MS);
+  window.addEventListener('pagehide', (event) => {
+    if (event.persisted) return;
+    requestGracefulShutdown();
   });
   document.getElementById('btn-connect').addEventListener('click', connectWallet);
   document.getElementById('btn-connect-hero').addEventListener('click', connectWallet);
