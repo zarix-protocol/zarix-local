@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="1.1.2"
+VERSION="1.1.3"
 BINARY_NAME="zarix-local"
 DIST_DIR="dist"
 

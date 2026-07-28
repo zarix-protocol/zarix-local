@@ -1,5 +1,48 @@
 /* zarix local */
 
+@font-face {
+    font-family: 'Inter';
+    font-style: normal;
+    font-weight: 300;
+    font-display: swap;
+    src: url('fonts/Inter-Light.woff2') format('woff2');
+}
+@font-face {
+    font-family: 'Inter';
+    font-style: normal;
+    font-weight: 400;
+    font-display: swap;
+    src: url('fonts/Inter-Regular.woff2') format('woff2');
+}
+@font-face {
+    font-family: 'Inter';
+    font-style: normal;
+    font-weight: 500;
+    font-display: swap;
+    src: url('fonts/Inter-Medium.woff2') format('woff2');
+}
+@font-face {
+    font-family: 'Inter';
+    font-style: normal;
+    font-weight: 600;
+    font-display: swap;
+    src: url('fonts/Inter-SemiBold.woff2') format('woff2');
+}
+@font-face {
+    font-family: 'Inter';
+    font-style: normal;
+    font-weight: 700;
+    font-display: swap;
+    src: url('fonts/Inter-Bold.woff2') format('woff2');
+}
+@font-face {
+    font-family: 'Inter';
+    font-style: normal;
+    font-weight: 800;
+    font-display: swap;
+    src: url('fonts/Inter-ExtraBold.woff2') format('woff2');
+}
+
 :root {
     --bg-primary: #06060f;
     --bg-secondary: #0c0c1d;
@@ -35,8 +78,8 @@
     --glass-border: rgba(100, 80, 200, 0.12);
     --glass-blur: blur(20px);
 
-    --font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-    --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+    --font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --font-mono: ui-monospace, 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace;
 
     --header-height: 64px;
     --footer-height: 36px;
@@ -88,6 +131,19 @@ body {
     line-height: 1.5;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+}
+
+.offline-banner {
+    position: sticky;
+    top: 0;
+    z-index: 200;
+    padding: var(--spacing-sm) var(--spacing-xl);
+    text-align: center;
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: var(--warning);
+    background: var(--warning-dim);
+    border-bottom: 1px solid rgba(255, 171, 64, 0.25);
 }
 
 /* Background gradient orbs */
@@ -893,6 +949,38 @@ a:hover {
     background: rgba(124, 77, 255, 0.15);
     border: 1px solid rgba(124, 77, 255, 0.3);
     color: var(--accent-primary);
+}
+
+.toast-msg {
+    flex: 1;
+    min-width: 0;
+}
+
+.toast-action {
+    flex-shrink: 0;
+    border: 1px solid currentColor;
+    background: transparent;
+    color: inherit;
+    border-radius: var(--radius-sm);
+    padding: 4px 10px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    cursor: pointer;
+    font-family: inherit;
+}
+
+.toast-action:hover {
+    opacity: 0.85;
+}
+
+.explorer-offline {
+    color: var(--text-tertiary);
+    cursor: default;
+}
+
+.rpc-public-hint {
+    color: var(--warning);
+    margin-top: var(--spacing-sm);
 }
 
 @keyframes toastIn {

@@ -5,12 +5,12 @@ use mime_guess::from_path;
 use reqwest::Client;
 use rust_embed::Embed;
 use std::io::Write;
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
-const VERSION: &str = "1.1.2";
+const VERSION: &str = "1.1.3";
 const HOST: &str = "127.0.0.1";
 const PORT: u16 = 3847;
 const DEFAULT_RPC: &str = "https://api.mainnet-beta.solana.com";
@@ -57,6 +57,18 @@ fn is_valid_origin(req: &HttpRequest) -> bool {
     }
 }
 
+fn rpc_upstream_error(message: &str) -> HttpResponse {
+    // Return JSON-RPC error shape with HTTP 200 so solana-web3 surfaces `message`
+    // instead of a generic fetch/HTTP failure.
+    HttpResponse::Ok()
+        .content_type("application/json")
+        .json(serde_json::json!({
+            "jsonrpc": "2.0",
+            "error": { "code": -32005, "message": message },
+            "id": null
+        }))
+}
+
 async fn rpc_proxy(req: HttpRequest, body: web::Bytes, data: web::Data<AppState>) -> HttpResponse {
     if !is_valid_origin(&req) {
         return HttpResponse::Forbidden().json(serde_json::json!({"error": "Forbidden"}));
@@ -83,18 +95,38 @@ async fn rpc_proxy(req: HttpRequest, body: web::Bytes, data: web::Data<AppState>
         .await
     {
         Ok(resp) => {
+            let status = resp.status();
+            if status.as_u16() == 429 {
+                return rpc_upstream_error(
+                    "RPC rate limited (429). Wait a moment or switch to Helius/QuickNode in Settings.",
+                );
+            }
+            if status.is_server_error() {
+                return rpc_upstream_error(&format!(
+                    "RPC server error ({}). Check your RPC URL or try again.",
+                    status.as_u16()
+                ));
+            }
             let response_body = resp.bytes().await.unwrap_or_default();
             if response_body.len() > MAX_RESPONSE_BYTES {
-                return HttpResponse::BadGateway()
-                    .json(serde_json::json!({"error": "RPC response too large"}));
+                return rpc_upstream_error("RPC response too large");
             }
             HttpResponse::Ok()
                 .content_type("application/json")
                 .body(response_body)
         }
-        Err(_e) => HttpResponse::BadGateway().json(serde_json::json!({
-            "error": "RPC request failed. Check your RPC URL in Settings."
-        })),
+        Err(e) => {
+            let error = if e.is_timeout() {
+                "RPC timed out. Check your internet or try another RPC in Settings."
+            } else if e.is_connect() {
+                "Could not reach RPC. Check internet or your RPC URL in Settings."
+            } else if e.is_request() {
+                "RPC request failed. Check your RPC URL in Settings."
+            } else {
+                "RPC request failed. Check your internet and RPC URL in Settings."
+            };
+            rpc_upstream_error(error)
+        }
     }
 }
 
@@ -367,6 +399,21 @@ fn spawn_idle_watchdog(data: web::Data<AppState>) {
     });
 }
 
+fn wait_until_ready(addr: &str) {
+    for attempt in 0..80 {
+        if TcpStream::connect(addr).is_ok() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+        if attempt == 79 {
+            eprintln!(
+                "Warning: local server not reachable at {} before opening the window.",
+                addr
+            );
+        }
+    }
+}
+
 fn launch_app_window(url: &str) {
     if let Some(browser) = find_browser() {
         let app_flag = format!("--app={}", url);
@@ -408,8 +455,6 @@ async fn main() -> std::io::Result<()> {
     let url = format!("http://{}:{}", HOST, PORT);
     println!("Zarix Local v{} — http://{}:{}", VERSION, HOST, PORT);
 
-    launch_app_window(&url);
-
     let app_state = web::Data::new(AppState {
         rpc_url: RwLock::new(DEFAULT_RPC.to_string()),
         http: Client::builder()
@@ -423,7 +468,8 @@ async fn main() -> std::io::Result<()> {
 
     spawn_idle_watchdog(app_state.clone());
 
-    HttpServer::new(move || {
+    // Actix only listens once the Server future is polled — spawn first, then open browser.
+    let server = HttpServer::new(move || {
         App::new()
             .app_data(app_state.clone())
             .route("/api/rpc", web::post().to(rpc_proxy))
@@ -434,6 +480,20 @@ async fn main() -> std::io::Result<()> {
             .route("/{filename:.*}", web::get().to(serve_embedded))
     })
     .bind(&addr)?
-    .run()
-    .await
+    .run();
+
+    let server_task = actix_web::rt::spawn(async move {
+        if let Err(e) = server.await {
+            eprintln!("Server error: {}", e);
+            std::process::exit(1);
+        }
+    });
+
+    wait_until_ready(&addr);
+    launch_app_window(&url);
+
+    server_task
+        .await
+        .map_err(|e| std::io::Error::other(format!("server task failed: {e}")))?;
+    Ok(())
 }

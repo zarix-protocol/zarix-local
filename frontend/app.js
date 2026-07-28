@@ -13,7 +13,7 @@
     rpcUrl: localStorage.getItem(UI.STORAGE.RPC_URL) || UI.APP.PROXY_URL,
     refreshInterval: null,
   };
-  function showToast(message, type = 'info', duration = 5000) {
+  function showToast(message, type = 'info', duration = 5000, action = null) {
     const container = document.getElementById('toast-container');
     const toast = document.createElement('div');
     toast.className = 'toast ' + type;
@@ -21,17 +21,47 @@
     const icon = document.createElement('span');
     icon.textContent = icons[type] || '';
     const msg = document.createElement('span');
+    msg.className = 'toast-msg';
     msg.textContent = message;
     toast.appendChild(icon);
     toast.appendChild(msg);
+    if (action && action.label && typeof action.onClick === 'function') {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'toast-action';
+      btn.textContent = action.label;
+      btn.addEventListener('click', () => {
+        toast.remove();
+        action.onClick();
+      });
+      toast.appendChild(btn);
+      duration = Math.max(duration, 20000);
+    }
     container.appendChild(toast);
     if (type !== 'loading') {
       setTimeout(() => {
+        if (!toast.isConnected) return;
         toast.style.animation = 'toastOut 0.3s ease forwards';
         setTimeout(() => toast.remove(), 300);
       }, duration);
     }
     return toast;
+  }
+
+  function toastTxFailure(e, context, retryFn) {
+    console.error(context + ':', e);
+    const msg = txErrorMessage(e).toLowerCase();
+    const userRejected = msg.includes('rejected') || msg.includes('user rejected');
+    const retryable =
+      typeof retryFn === 'function' &&
+      !userRejected &&
+      (isBlockhashError(e) || isNetworkError(e));
+    showToast(
+      handleTxError(e, context),
+      'error',
+      retryable ? 20000 : 5000,
+      retryable ? { label: 'Retry', onClick: retryFn } : null
+    );
   }
   document.querySelectorAll('.nav-btn').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -50,25 +80,17 @@
       }
     });
   });
-  async function pollConfirmation(signature, maxRetries = UI.TIME.POLL_MAX_RETRIES) {
-    for (let i = 0; i < maxRetries; i++) {
-      await new Promise(r => setTimeout(r, UI.TIME.POLL_INTERVAL_MS));
-      try {
-        const resp = await state.connection.getSignatureStatuses([signature]);
-        const status = resp && resp.value && resp.value[0];
-        if (status) {
-          if (status.err) throw new Error('Transaction failed: ' + JSON.stringify(status.err));
-          if (status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized') {
-            return status;
-          }
-        }
-      } catch(e) {
-        if (e.message.includes('Transaction failed')) throw e;
-        // RPC error, retry
-      }
+  async function confirmSignature(signature, blockhash, lastValidBlockHeight) {
+    const result = await state.connection.confirmTransaction(
+      { signature, blockhash, lastValidBlockHeight },
+      'confirmed'
+    );
+    if (result.value.err) {
+      throw new Error('Transaction failed: ' + JSON.stringify(result.value.err));
     }
-    throw new Error('Transaction confirmation timeout — check Solscan for tx: ' + signature);
+    return result;
   }
+
   function isPremiumRPC() {
     const target = localStorage.getItem(UI.STORAGE.RPC_TARGET) || '';
     const url = (target || state.rpcUrl).toLowerCase();
@@ -104,12 +126,19 @@
   }
 
   async function signAndConfirm(tx) {
+    if (!navigator.onLine) {
+      throw new Error('No internet connection');
+    }
     tx.feePayer = state.publicKey;
-    const { blockhash } = await state.connection.getLatestBlockhash('confirmed');
+    const { blockhash, lastValidBlockHeight } = await state.connection.getLatestBlockhash('confirmed');
     tx.recentBlockhash = blockhash;
+    tx.signatures = [];
     const signed = await state.wallet.signTransaction(tx);
-    const sig = await state.connection.sendRawTransaction(signed.serialize(), { skipPreflight: false });
-    await pollConfirmation(sig);
+    const sig = await state.connection.sendRawTransaction(signed.serialize(), {
+      skipPreflight: false,
+      maxRetries: 3,
+    });
+    await confirmSignature(sig, blockhash, lastValidBlockHeight);
     return sig;
   }
 
@@ -144,6 +173,14 @@
     else if (state.rpcUrl.includes('helius')) label = 'Helius';
     document.getElementById('footer-rpc').textContent = '🔗 RPC: ' + label;
     document.getElementById('rpc-url').value = isProxy ? (target || UI.APP.DEFAULT_SOLANA_RPC) : state.rpcUrl;
+
+    const rpcHint = document.getElementById('rpc-public-hint');
+    if (rpcHint) {
+      const usingPublic =
+        (isProxy && (!target || target === UI.APP.DEFAULT_SOLANA_RPC)) ||
+        state.rpcUrl === UI.APP.DEFAULT_SOLANA_RPC;
+      rpcHint.classList.toggle('hidden', !usingPublic || isPremiumRPC());
+    }
   }
   function getProvider() {
     if (window.phantom?.solana?.isPhantom) return window.phantom.solana;
@@ -271,7 +308,11 @@
       updateStakeForm();
     } catch(e) {
       console.error('Refresh error:', e);
-      showToast('Failed to fetch data: ' + e.message, 'error');
+      if (isNetworkError(e)) {
+        showToast('No internet — balances need a chain connection. UI still works offline.', 'info', 5000);
+      } else {
+        showToast('Failed to fetch data: ' + e.message, 'error');
+      }
     }
   }
   function updateDashboard() {
@@ -496,7 +537,7 @@
 
       return '<div class="tx-row">' +
         '<span class="tx-type ' + tx.type.cls + '">' + tx.type.label + '</span>' +
-        '<span class="tx-sig"><a href="' + explorerTxUrl(tx.sig) + '" target="_blank" title="' + tx.sig + '">' + shortSig + ' ↗</a></span>' +
+        '<span class="tx-sig">' + explorerAnchor(explorerTxUrl(tx.sig), shortSig, tx.sig) + '</span>' +
         amountHtml +
         '<span class="tx-time">' + time + '</span>' +
         '<span class="tx-status ' + statusClass + '">' + statusText + '</span>' +
@@ -626,7 +667,7 @@
               '<div class="gauge-card-top">' +
                 '<div class="gauge-card-identity">' +
                   '<span class="tx-badge ' + (g.isActive ? 'stake' : 'other') + '">' + (g.isActive ? '● Active' : '○ Inactive') + '</span>' +
-                  '<a href="' + explorerAccountUrl(mintStr) + '" target="_blank" rel="noopener" class="lp-pool-link">' + shortMint + ' ↗</a>' +
+                  '<span class="lp-pool-link">' + explorerAnchor(explorerAccountUrl(mintStr), shortMint, mintStr) + '</span>' +
                 '</div>' +
               '</div>' +
               '<div class="gauge-card-stats">' +
@@ -749,7 +790,7 @@
           '<div class="lp-pos-top">' +
             '<div class="lp-pos-identity">' +
               '<span class="lp-pos-num">#' + (i + 1) + '</span>' +
-              '<a href="' + explorerAccountUrl(p.mintStr) + '" target="_blank" rel="noopener" class="lp-pool-link">' + p.shortMint + ' ↗</a>' +
+              '<span class="lp-pool-link">' + explorerAnchor(explorerAccountUrl(p.mintStr), p.shortMint, p.mintStr) + '</span>' +
               '<span class="tx-badge ' + (p.isLocked ? 'claim' : 'stake') + '">' + (p.isLocked ? '🔒 ' + p.timeRemaining : '✅ Unlocked') + '</span>' +
             '</div>' +
           '</div>' +
@@ -815,8 +856,7 @@
       fetchLPStakerData();
     } catch(e) {
       loading.remove();
-      console.error('LP Claim:', e);
-      showToast('LP Claim failed: ' + (e.message || e), 'error');
+      toastTxFailure(e, 'LP Claim', () => handleLPClaim(positionIndex));
     }
   }
 
@@ -837,8 +877,7 @@
       fetchLPStakerData();
     } catch(e) {
       loading.remove();
-      console.error('LP Unstake:', e);
-      showToast('LP Unstake failed: ' + (e.message || e), 'error');
+      toastTxFailure(e, 'LP Unstake', () => handleLPUnstake(positionIndex));
     }
   }
   function renderStakes() {
@@ -1007,17 +1046,8 @@
 
       tx.add(createStakeInstruction(state.publicKey, userTokenAccount, amountLamports, lockDays, stakeIndex));
 
-      statusEl.textContent = '⏳ Please approve in wallet...';
-
-      const { blockhash, lastValidBlockHeight } = await state.connection.getLatestBlockhash();
-      tx.recentBlockhash = blockhash;
-      tx.feePayer = state.publicKey;
-
-      const signed = await state.wallet.signTransaction(tx);
-      const sig = await state.connection.sendRawTransaction(signed.serialize());
-
-      statusEl.textContent = '⏳ Confirming...';
-      await pollConfirmation(sig);
+      statusEl.textContent = '⏳ Approve in wallet, then confirming...';
+      await signAndConfirm(tx);
 
       statusEl.className = 'form-status success';
       statusEl.textContent = '✅ Staked ' + amount.toLocaleString() + ' ' + UI.STRINGS.TOKEN + ' successfully!';
@@ -1026,10 +1056,9 @@
       document.getElementById('stake-amount').value = '';
       await refreshAll();
     } catch(e) {
-      console.error('Stake error:', e);
       statusEl.className = 'form-status error';
       statusEl.textContent = handleTxError(e, 'Stake');
-      showToast(handleTxError(e, 'Stake'), 'error');
+      toastTxFailure(e, 'Stake', () => doStake());
     }
   }
   async function doClaim(stakeIndex) {
@@ -1044,17 +1073,14 @@
       await refreshAll();
     } catch(e) {
       loading.remove();
-      console.error('Claim:', e);
-      if (e.message?.includes('rejected')) {
-        showToast(handleTxError(e, 'Claim'), 'error');
-      } else if (e.message?.includes('0x80') || e.message?.includes('cooldown')) {
+      if (e.message?.includes('0x80') || e.message?.includes('cooldown')) {
         const match = e.message?.match(/Wait (\d+) more seconds/);
         const secs = match ? parseInt(match[1]) : 0;
         const timeStr = secs > 0 ? formatDuration(secs) : '';
         showToast('Claim cooldown active.' + (timeStr ? ' Try again in ~' + timeStr + '.' : ' Try again later.'), 'error');
         await refreshAll();
       } else {
-        showToast(handleTxError(e, 'Claim'), 'error');
+        toastTxFailure(e, 'Claim', () => doClaim(stakeIndex));
       }
     }
   }
@@ -1077,8 +1103,7 @@
       await refreshAll();
     } catch(e) {
       loading.remove();
-      console.error('Unstake:', e);
-      showToast(handleTxError(e, 'Unstake'), 'error');
+      toastTxFailure(e, 'Unstake', () => doUnstake(stakeIndex));
     }
   }
   window._claim = doClaim;
@@ -1143,7 +1168,9 @@
       resultEl.textContent = '✅ Connected! Current slot: ' + slot.toLocaleString();
     } catch(e) {
       resultEl.className = 'form-status error';
-      resultEl.textContent = '❌ Failed: ' + e.message;
+      resultEl.textContent = isNetworkError(e)
+        ? '❌ No internet — RPC test needs a network connection'
+        : '❌ Failed: ' + e.message;
     }
   });
   document.getElementById('btn-quit-app').addEventListener('click', async () => {
@@ -1183,6 +1210,26 @@
 
   sendHeartbeat();
   setInterval(sendHeartbeat, UI.TIME.HEARTBEAT_INTERVAL_MS);
+
+  fetch(UI.APP.API_PING || '/api/ping')
+    .then((r) => r.json())
+    .then((data) => {
+      if (!data || !data.version) return;
+      document.querySelectorAll('[data-app-version]').forEach((el) => {
+        el.textContent = 'v' + data.version;
+      });
+    })
+    .catch(() => {});
+
+  function updateOfflineBanner() {
+    const banner = document.getElementById('offline-banner');
+    if (!banner) return;
+    banner.classList.toggle('hidden', navigator.onLine);
+  }
+  updateOfflineBanner();
+  window.addEventListener('online', updateOfflineBanner);
+  window.addEventListener('offline', updateOfflineBanner);
+
   window.addEventListener('pagehide', (event) => {
     if (event.persisted) return;
     requestGracefulShutdown();
@@ -1216,7 +1263,7 @@
     document.getElementById('lp-amount-input').value = formatPrecise(bal);
   });
 
-  document.getElementById('btn-lp-stake').addEventListener('click', async () => {
+  async function doLPStake() {
     if (!state.publicKey || !state.wallet || !state.lpGauges) return;
 
     const poolIdx = parseInt(document.getElementById('lp-pool-select').value);
@@ -1288,25 +1335,18 @@
       tx.add(stakeRentIx);
       tx.add(ix);
 
-      tx.feePayer = state.publicKey;
-      const { blockhash } = await state.connection.getLatestBlockhash('confirmed');
-      tx.recentBlockhash = blockhash;
-
-      const signed = await state.wallet.signTransaction(tx);
-      const sig = await state.connection.sendRawTransaction(signed.serialize(), { skipPreflight: false });
+      await signAndConfirm(tx);
       loading.remove();
-      showToast('LP Stake sent! Confirming...', 'info');
-
-      await pollConfirmation(sig);
       showToast('LP Stake successful! ✅', 'success');
       document.getElementById('lp-amount-input').value = '';
       fetchLPStakerData();
     } catch(e) {
       loading.remove();
-      console.error('LP Stake error:', e);
-      showToast('LP Stake failed: ' + (e.message || e), 'error');
+      toastTxFailure(e, 'LP Stake', () => doLPStake());
     }
-  });
+  }
+
+  document.getElementById('btn-lp-stake').addEventListener('click', doLPStake);
   initConnection();
   setTimeout(() => {
     const provider = getProvider();

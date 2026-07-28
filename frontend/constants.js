@@ -89,6 +89,7 @@ const UI = {
     API_SET_RPC: '/api/rpc/set',
     API_SHUTDOWN: '/api/shutdown',
     API_HEARTBEAT: '/api/heartbeat',
+    API_PING: '/api/ping',
     DEFAULT_SOLANA_RPC: 'https://api.mainnet-beta.solana.com',
     EXPLORER_BASE: 'https://solscan.io',
   },
@@ -137,11 +138,69 @@ function explorerAccountUrl(addr) {
   return UI.APP.EXPLORER_BASE + '/account/' + addr;
 }
 
+function explorerAnchor(url, text, title) {
+  const t = title || text;
+  if (!navigator.onLine) {
+    return '<span class="explorer-offline" title="Offline — explorer needs internet">' + text + '</span>';
+  }
+  return '<a href="' + url + '" target="_blank" rel="noopener" title="' + t + '">' + text + ' ↗</a>';
+}
+
+function txErrorMessage(e) {
+  return String(e && e.message ? e.message : e || '');
+}
+
+function isNetworkError(e) {
+  const msg = txErrorMessage(e).toLowerCase();
+  return (
+    !navigator.onLine ||
+    msg.includes('failed to fetch') ||
+    msg.includes('networkerror') ||
+    msg.includes('network request failed') ||
+    msg.includes('load failed') ||
+    msg.includes('err_internet_disconnected') ||
+    msg.includes('err_network_changed') ||
+    msg.includes('err_connection') ||
+    msg.includes('rpc request failed') ||
+    msg.includes('rpc timed out') ||
+    msg.includes('could not reach rpc') ||
+    msg.includes('rate limited')
+  );
+}
+
+function isBlockhashError(e) {
+  const msg = txErrorMessage(e).toLowerCase();
+  return (
+    msg.includes('blockhash not found') ||
+    msg.includes('block height exceeded') ||
+    msg.includes('blockhash expired') ||
+    msg.includes('transaction has expired')
+  );
+}
+
 function handleTxError(e, context) {
-  if (e.message?.includes('rejected')) {
+  const msg = txErrorMessage(e);
+  if (msg.toLowerCase().includes('rejected') || msg.toLowerCase().includes('user rejected')) {
     return 'Transaction rejected by user';
   }
-  return context + ' failed: ' + (e.message || 'Unknown error');
+  if (!navigator.onLine || isNetworkError(e)) {
+    return context + ' needs internet — connect and try again';
+  }
+  if (isBlockhashError(e)) {
+    return context + ' failed — RPC dropped the blockhash. Use Helius/QuickNode in Settings, or tap Retry';
+  }
+  if (msg.toLowerCase().includes('failed to simulate') || msg.toLowerCase().includes('simulation failed')) {
+    if (msg.toLowerCase().includes('blockhash')) {
+      return context + ' failed — RPC dropped the blockhash. Use Helius/QuickNode in Settings, or tap Retry';
+    }
+    if (msg.toLowerCase().includes('reverted') || msg.toLowerCase().includes('custom program error')) {
+      return context + ' failed — simulation reverted on-chain. Funds are safe if you cancel; check amount/cooldown and try again';
+    }
+    return context + ' failed — simulation failed. Check RPC/internet, or try again';
+  }
+  // Keep toast short; dump full RPC blobs only in console
+  const short = msg.split('Logs:')[0].trim().replace(/\s+/g, ' ');
+  return context + ' failed: ' + (short.length > 140 ? short.slice(0, 137) + '...' : short || 'Unknown error');
 }
 
 const InstructionType = {

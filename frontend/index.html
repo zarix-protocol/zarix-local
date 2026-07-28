@@ -4,15 +4,15 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="description" content="Zarix Local — Stake, unstake, and claim ZARIX tokens directly from your desktop. Zero server dependency, fully open source.">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self' https://*.helius-rpc.com https://*.quiknode.pro https://*.quicknode.com https://api.mainnet-beta.solana.com https://*.solana.com; img-src 'self' data:; frame-src 'none';">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; connect-src 'self' https://*.helius-rpc.com https://*.quiknode.pro https://*.quicknode.com https://api.mainnet-beta.solana.com https://*.solana.com; img-src 'self' data:; frame-src 'none';">
     <title>ZARIX LOCAL — Desktop Staking</title>
     <link rel="icon" type="image/png" href="logo.png">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+    <div id="offline-banner" class="offline-banner hidden" role="status">
+        Offline — app UI is local. Internet is only needed for wallet connect, balances, and transactions.
+    </div>
     <div id="toast-container"></div>
 
     <header id="app-header">
@@ -238,7 +238,8 @@
                             <button id="btn-save-rpc" class="btn btn-sm btn-primary">Save</button>
                             <button id="btn-reset-rpc" class="btn btn-sm btn-outline" title="Reset to Solana Public RPC">Reset</button>
                         </div>
-                        <div class="form-hint">Default: Solana Public RPC. Paste your own Helius/QuickNode URL for better performance.</div>
+                        <div class="form-hint">Default: Solana Public RPC (needs internet). Paste your own Helius/QuickNode URL for better performance. The app UI itself runs fully offline.</div>
+                        <div id="rpc-public-hint" class="form-hint rpc-public-hint hidden">Public Solana RPC is fine for browsing, but blockhash / simulation errors are common. Use Helius or QuickNode for reliable transactions.</div>
                     </div>
 
                     <div class="form-group">
@@ -251,7 +252,7 @@
                     <div class="settings-info">
                         <div class="info-row">
                             <span>Version</span>
-                            <span>v1.1.2</span>
+                            <span data-app-version>v1.1.3</span>
                         </div>
                         <div class="info-row">
                             <span>Program ID</span>
@@ -321,7 +322,7 @@
             <span id="footer-rpc" class="footer-item">🔗 RPC: Solana Public</span>
         </div>
         <div class="footer-right">
-            <span class="footer-item">📦 v1.1.2</span>
+            <span class="footer-item">📦 <span data-app-version>v1.1.3</span></span>
             <span class="footer-item">🔒 Localhost Only</span>
         </div>
     </footer>
