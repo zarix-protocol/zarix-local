@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
-const VERSION: &str = "1.1.3";
+const VERSION: &str = "1.1.4";
 const HOST: &str = "127.0.0.1";
 const PORT: u16 = 3847;
 const DEFAULT_RPC: &str = "https://api.mainnet-beta.solana.com";

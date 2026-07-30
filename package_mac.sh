@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="1.1.2"
+VERSION="1.1.4"
 BINARY_NAME="zarix-local"
 DIST_DIR="dist"
 
@@ -59,12 +59,12 @@ EOF
     echo "  -> ${DIST_DIR}/${dmg_name}"
 }
 
-if [ -f "${DIST_DIR}/zarix-local-1.1.2-macos-x86_64" ]; then
-    package_mac_app "zarix-local-1.1.2-macos-x86_64" "macos-x86_64"
+if [ -f "${DIST_DIR}/zarix-local-${VERSION}-macos-x86_64" ]; then
+    package_mac_app "zarix-local-${VERSION}-macos-x86_64" "macos-x86_64"
 fi
 
-if [ -f "${DIST_DIR}/zarix-local-1.1.2-macos-arm64" ]; then
-    package_mac_app "zarix-local-1.1.2-macos-arm64" "macos-arm64"
+if [ -f "${DIST_DIR}/zarix-local-${VERSION}-macos-arm64" ]; then
+    package_mac_app "zarix-local-${VERSION}-macos-arm64" "macos-arm64"
 fi
 
 echo "Done packaging!"

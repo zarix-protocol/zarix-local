@@ -1,8 +1,9 @@
 // solana program interaction — PDA derivation, account parsing, instruction builders
 const { Connection, PublicKey, Transaction, TransactionInstruction, SystemProgram,
-  SYSVAR_RENT_PUBKEY, SYSVAR_CLOCK_PUBKEY } = SolanaBundle;
+  ComputeBudgetProgram, SYSVAR_RENT_PUBKEY, SYSVAR_CLOCK_PUBKEY } = SolanaBundle;
 const { TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync, getAssociatedTokenAddress,
-  getAccount, createAssociatedTokenAccountInstruction, ASSOCIATED_TOKEN_PROGRAM_ID } = SolanaBundle;
+  getAccount, TokenAccountNotFoundError, createAssociatedTokenAccountInstruction,
+  ASSOCIATED_TOKEN_PROGRAM_ID } = SolanaBundle;
 
 const PROGRAM_ID = new PublicKey(ZARIX.PROGRAM_ID);
 const TOKEN_MINT = new PublicKey(ZARIX.TOKEN_MINT);

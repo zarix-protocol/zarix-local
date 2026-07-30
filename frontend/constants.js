@@ -178,25 +178,47 @@ function isBlockhashError(e) {
   );
 }
 
+function isMissingAccountError(e) {
+  const msg = txErrorMessage(e).toLowerCase();
+  return (
+    (typeof TokenAccountNotFoundError !== 'undefined' && e instanceof TokenAccountNotFoundError) ||
+    e?.name === 'TokenAccountNotFoundError' ||
+    msg.includes('could not find account') ||
+    msg.includes('account not found') ||
+    msg.includes('invalid account data') ||
+    msg.includes('account does not exist')
+  );
+}
+
 function handleTxError(e, context) {
   const msg = txErrorMessage(e);
-  if (msg.toLowerCase().includes('rejected') || msg.toLowerCase().includes('user rejected')) {
+  const lower = msg.toLowerCase();
+  if (lower.includes('rejected') || lower.includes('user rejected')) {
     return 'Transaction rejected by user';
   }
   if (!navigator.onLine || isNetworkError(e)) {
     return context + ' needs internet — connect and try again';
   }
-  if (isBlockhashError(e)) {
-    return context + ' failed — RPC dropped the blockhash. Use Helius/QuickNode in Settings, or tap Retry';
+  if (isMissingAccountError(e) || lower.includes('accountnotfound') || lower.includes('owned by the system program')) {
+    return context + ' failed — token account missing. Retry to create it automatically';
   }
-  if (msg.toLowerCase().includes('failed to simulate') || msg.toLowerCase().includes('simulation failed')) {
-    if (msg.toLowerCase().includes('blockhash')) {
-      return context + ' failed — RPC dropped the blockhash. Use Helius/QuickNode in Settings, or tap Retry';
+  if (lower.includes('insufficient funds') || lower.includes('insufficient lamports')) {
+    return context + ' failed — not enough SOL for fees/rent';
+  }
+  if (lower.includes('already been processed') || lower.includes('already processed')) {
+    return context + ' may have already succeeded — refresh and check your balance';
+  }
+  if (isBlockhashError(e)) {
+    return context + ' failed — confirmation timed out. Check Solscan / tap Retry only if balance did not update';
+  }
+  if (lower.includes('failed to simulate') || lower.includes('simulation failed')) {
+    if (lower.includes('blockhash')) {
+      return context + ' failed — confirmation timed out. Check Solscan / tap Retry only if balance did not update';
     }
-    if (msg.toLowerCase().includes('reverted') || msg.toLowerCase().includes('custom program error')) {
+    if (lower.includes('reverted') || lower.includes('custom program error')) {
       return context + ' failed — simulation reverted on-chain. Funds are safe if you cancel; check amount/cooldown and try again';
     }
-    return context + ' failed — simulation failed. Check RPC/internet, or try again';
+    return context + ' failed — simulation failed. Check amount, accounts, and RPC, then try again';
   }
   // Keep toast short; dump full RPC blobs only in console
   const short = msg.split('Logs:')[0].trim().replace(/\s+/g, ' ');

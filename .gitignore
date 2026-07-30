@@ -5,3 +5,4 @@
 *.exe
 *.pdb
 .agents/
+.DS_Store

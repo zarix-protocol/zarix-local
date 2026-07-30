@@ -12,6 +12,8 @@
     selectedLockDays: 365,
     rpcUrl: localStorage.getItem(UI.STORAGE.RPC_URL) || UI.APP.PROXY_URL,
     refreshInterval: null,
+    txInFlight: false,
+    rpcSyncOk: true,
   };
   function showToast(message, type = 'info', duration = 5000, action = null) {
     const container = document.getElementById('toast-container');
@@ -52,14 +54,16 @@
     console.error(context + ':', e);
     const msg = txErrorMessage(e).toLowerCase();
     const userRejected = msg.includes('rejected') || msg.includes('user rejected');
+    const alreadyProcessed = msg.includes('already been processed') || msg.includes('already processed');
     const retryable =
       typeof retryFn === 'function' &&
       !userRejected &&
-      (isBlockhashError(e) || isNetworkError(e));
+      !alreadyProcessed &&
+      (isBlockhashError(e) || isNetworkError(e) || isMissingAccountError(e));
     showToast(
       handleTxError(e, context),
       'error',
-      retryable ? 20000 : 5000,
+      retryable ? 20000 : 8000,
       retryable ? { label: 'Retry', onClick: retryFn } : null
     );
   }
@@ -80,15 +84,51 @@
       }
     });
   });
-  async function confirmSignature(signature, blockhash, lastValidBlockHeight) {
-    const result = await state.connection.confirmTransaction(
-      { signature, blockhash, lastValidBlockHeight },
-      'confirmed'
+  async function getSignatureConfirmation(signature) {
+    const statuses = await state.connection.getSignatureStatuses([signature], {
+      searchTransactionHistory: true,
+    });
+    return statuses?.value?.[0] || null;
+  }
+
+  function isConfirmedStatus(st) {
+    return (
+      !!st &&
+      !st.err &&
+      (st.confirmationStatus === 'confirmed' || st.confirmationStatus === 'finalized')
     );
-    if (result.value.err) {
-      throw new Error('Transaction failed: ' + JSON.stringify(result.value.err));
+  }
+
+  async function confirmSignature(signature, blockhash, lastValidBlockHeight) {
+    try {
+      const result = await state.connection.confirmTransaction(
+        { signature, blockhash, lastValidBlockHeight },
+        'confirmed'
+      );
+      if (result.value.err) {
+        throw new Error('Transaction failed: ' + JSON.stringify(result.value.err));
+      }
+      return result;
+    } catch (e) {
+      // Blockhash can expire while waiting; tx may still have landed.
+      if (!isBlockhashError(e)) throw e;
+      for (let i = 0; i < UI.TIME.POLL_MAX_RETRIES; i++) {
+        const st = await getSignatureConfirmation(signature);
+        if (st?.err) {
+          throw new Error('Transaction failed: ' + JSON.stringify(st.err));
+        }
+        if (isConfirmedStatus(st)) {
+          return { value: { err: null } };
+        }
+        await new Promise((r) => setTimeout(r, UI.TIME.POLL_INTERVAL_MS));
+      }
+      const explorerHint = explorerTxUrl(signature);
+      const err = new Error(
+        'Confirmation timed out. Check ' + explorerHint + ' before retrying.'
+      );
+      err.signature = signature;
+      throw err;
     }
-    return result;
   }
 
   function isPremiumRPC() {
@@ -125,19 +165,120 @@
     return total - Math.floor((total * stakerPct) / 100);
   }
 
-  async function signAndConfirm(tx) {
+  function cloneTxInstructions(tx) {
+    const fresh = new Transaction();
+    fresh.feePayer = state.publicKey;
+    tx.instructions.forEach((ix) => fresh.add(ix));
+    return fresh;
+  }
+
+  function withPriorityFees(tx) {
+    const priced = cloneTxInstructions(tx);
+    // Prepend compute budget so congested mainnet still lands.
+    priced.instructions.unshift(
+      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 50_000 }),
+      ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 })
+    );
+    return priced;
+  }
+
+  function isTokenAccountMissing(e) {
+    return (
+      (typeof TokenAccountNotFoundError !== 'undefined' && e instanceof TokenAccountNotFoundError) ||
+      e?.name === 'TokenAccountNotFoundError' ||
+      String(e?.message || '').toLowerCase().includes('could not find account')
+    );
+  }
+
+  async function ensureAtaIx(owner, mint, allowOwnerOffCurve) {
+    const ata = getAssociatedTokenAddressSync(mint, owner, !!allowOwnerOffCurve);
+    try {
+      await getAccount(state.connection, ata);
+      return null;
+    } catch (e) {
+      if (!isTokenAccountMissing(e)) throw e;
+      return createAssociatedTokenAccountInstruction(owner, ata, owner, mint);
+    }
+  }
+
+  async function getRentLamports(accountSize) {
+    try {
+      return await state.connection.getMinimumBalanceForRentExemption(accountSize);
+    } catch (_) {
+      return calculateMinimumRent(accountSize);
+    }
+  }
+
+  async function withTxLock(fn) {
+    if (state.txInFlight) {
+      showToast('Another transaction is already in progress', 'info', 3000);
+      return;
+    }
+    state.txInFlight = true;
+    try {
+      return await fn();
+    } finally {
+      state.txInFlight = false;
+    }
+  }
+
+  async function setProxyRpc(url) {
+    const res = await fetch(UI.APP.API_SET_RPC, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rpc_url: url }),
+    });
+    if (!res.ok) {
+      let detail = 'HTTP ' + res.status;
+      try {
+        const body = await res.json();
+        if (body?.error) detail = body.error;
+      } catch (_) {}
+      throw new Error(detail);
+    }
+    return true;
+  }
+
+  async function signAndConfirm(tx, attempt = 0) {
     if (!navigator.onLine) {
       throw new Error('No internet connection');
     }
-    tx.feePayer = state.publicKey;
+    const maxAttempts = 3;
+    const prepared = withPriorityFees(tx);
+    prepared.feePayer = state.publicKey;
     const { blockhash, lastValidBlockHeight } = await state.connection.getLatestBlockhash('confirmed');
-    tx.recentBlockhash = blockhash;
-    tx.signatures = [];
-    const signed = await state.wallet.signTransaction(tx);
-    const sig = await state.connection.sendRawTransaction(signed.serialize(), {
-      skipPreflight: false,
-      maxRetries: 3,
-    });
+    prepared.recentBlockhash = blockhash;
+    prepared.signatures = [];
+
+    const signed = await state.wallet.signTransaction(prepared);
+
+    // Wallet approval can take long enough for the blockhash to expire.
+    const currentHeight = await state.connection.getBlockHeight('confirmed');
+    if (currentHeight > lastValidBlockHeight) {
+      if (attempt + 1 >= maxAttempts) {
+        throw new Error('Transaction has expired');
+      }
+      showToast('Blockhash expired — approve again quickly', 'info', 4000);
+      return signAndConfirm(cloneTxInstructions(tx), attempt + 1);
+    }
+
+    let sig;
+    try {
+      sig = await state.connection.sendRawTransaction(signed.serialize(), {
+        skipPreflight: false,
+        maxRetries: 5,
+        preflightCommitment: 'confirmed',
+      });
+    } catch (e) {
+      // Safe to resign only if nothing was sent.
+      if (isBlockhashError(e) && attempt + 1 < maxAttempts) {
+        showToast('Blockhash expired before send — approve again', 'info', 3000);
+        return signAndConfirm(cloneTxInstructions(tx), attempt + 1);
+      }
+      throw e;
+    }
+
+    // NEVER auto-resign after send — that can double-submit stakes/claims.
     await confirmSignature(sig, blockhash, lastValidBlockHeight);
     return sig;
   }
@@ -149,24 +290,32 @@
       '<p style="margin-top:8px;color:var(--text-tertiary);font-size:0.8rem;">Go to \u2699\uFE0F Settings and paste your RPC URL to enable this feature.</p>' +
       '</div>';
   }
-  function initConnection() {
+  async function initConnection() {
     state.connection = new Connection(state.rpcUrl, {
       commitment: 'confirmed',
-      confirmTransactionInitialTimeout: 60000,
+      confirmTransactionInitialTimeout: 90000,
     });
     const target = localStorage.getItem(UI.STORAGE.RPC_TARGET) || '';
     const isProxy = state.rpcUrl.includes(UI.APP.API_SET_RPC.replace('/set', ''));
 
+    state.rpcSyncOk = true;
     if (isProxy && target) {
-      fetch(UI.APP.API_SET_RPC, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rpc_url: target }),
-      }).catch(() => {});
+      try {
+        await setProxyRpc(target);
+      } catch (e) {
+        state.rpcSyncOk = false;
+        console.error('Failed to sync RPC proxy target:', e);
+        showToast(
+          'RPC proxy sync failed — using public RPC until you re-save Settings. ' + (e.message || ''),
+          'error',
+          8000
+        );
+      }
     }
 
     let label = 'Custom';
     if (isProxy && !target) label = 'Local Proxy → Solana Public';
+    else if (isProxy && target && !state.rpcSyncOk) label = 'Proxy sync FAILED (public fallback)';
     else if (isProxy && target.includes('helius')) label = 'Local Proxy → Helius';
     else if (isProxy && target.includes('quicknode')) label = 'Local Proxy → QuickNode';
     else if (isProxy && target) label = 'Local Proxy → Custom';
@@ -177,9 +326,9 @@
     const rpcHint = document.getElementById('rpc-public-hint');
     if (rpcHint) {
       const usingPublic =
-        (isProxy && (!target || target === UI.APP.DEFAULT_SOLANA_RPC)) ||
+        (isProxy && (!target || target === UI.APP.DEFAULT_SOLANA_RPC || !state.rpcSyncOk)) ||
         state.rpcUrl === UI.APP.DEFAULT_SOLANA_RPC;
-      rpcHint.classList.toggle('hidden', !usingPublic || isPremiumRPC());
+      rpcHint.classList.toggle('hidden', !usingPublic || (isPremiumRPC() && state.rpcSyncOk));
     }
   }
   function getProvider() {
@@ -260,9 +409,24 @@
       await refreshAll();
 
       if (state.refreshInterval) clearInterval(state.refreshInterval);
-      state.refreshInterval = setInterval(refreshAll, UI.TIME.REFRESH_INTERVAL_MS); 
+      state.refreshInterval = setInterval(refreshAll, UI.TIME.REFRESH_INTERVAL_MS);
+
+      if (typeof provider.on === 'function') {
+        provider.on('accountChanged', (pubkey) => {
+          if (!pubkey) {
+            disconnectWallet();
+            return;
+          }
+          state.publicKey = new PublicKey(pubkey.toString());
+          document.getElementById('wallet-address').textContent = shortenAddress(state.publicKey.toString());
+          refreshAll();
+        });
+        provider.on('disconnect', () => disconnectWallet());
+      }
     } catch(e) {
-      showToast('Connection rejected', 'error');
+      const msg = txErrorMessage(e).toLowerCase();
+      if (msg.includes('reject')) showToast('Connection rejected', 'error');
+      else showToast('Wallet connect failed: ' + (e.message || 'unknown error'), 'error');
     }
   }
 
@@ -843,42 +1007,52 @@
     });
   }
   async function handleLPClaim(positionIndex) {
-    const pos = state.lpPositions[positionIndex];
-    if (!pos || !state.publicKey || !state.wallet) return;
+    await withTxLock(async () => {
+      const pos = state.lpPositions[positionIndex];
+      if (!pos || !state.publicKey || !state.wallet) return;
 
-    const loading = showToast('Processing LP Claim...', 'loading');
-    try {
-      const userZarixATA = getAssociatedTokenAddressSync(TOKEN_MINT, state.publicKey, false);
-      const ix = createClaimLPAllocationsInstruction(state.publicKey, userZarixATA, pos.poolMint, pos.stakeIndex);
-      await signAndConfirm(new Transaction().add(ix));
-      loading.remove();
-      showToast('LP Claim successful!', 'success');
-      fetchLPStakerData();
-    } catch(e) {
-      loading.remove();
-      toastTxFailure(e, 'LP Claim', () => handleLPClaim(positionIndex));
-    }
+      const loading = showToast('Processing LP Claim...', 'loading');
+      try {
+        const userZarixATA = getAssociatedTokenAddressSync(TOKEN_MINT, state.publicKey, false);
+        const ataIx = await ensureAtaIx(state.publicKey, TOKEN_MINT, false);
+        const tx = new Transaction();
+        if (ataIx) tx.add(ataIx);
+        tx.add(createClaimLPAllocationsInstruction(state.publicKey, userZarixATA, pos.poolMint, pos.stakeIndex));
+        await signAndConfirm(tx);
+        loading.remove();
+        showToast('LP Claim successful!', 'success');
+        fetchLPStakerData();
+      } catch(e) {
+        loading.remove();
+        toastTxFailure(e, 'LP Claim', () => handleLPClaim(positionIndex));
+      }
+    });
   }
 
   async function handleLPUnstake(positionIndex) {
-    const pos = state.lpPositions[positionIndex];
-    if (!pos || !state.publicKey || !state.wallet) return;
+    await withTxLock(async () => {
+      const pos = state.lpPositions[positionIndex];
+      if (!pos || !state.publicKey || !state.wallet) return;
 
-    const lpAmt = Number(pos.lpAmount) / ZARIX.LAMPORTS_PER_TOKEN;
-    if (!confirm('Unstake ' + formatPrecise(lpAmt) + ' ' + UI.STRINGS.LP + ' from this position?')) return;
+      const lpAmt = Number(pos.lpAmount) / ZARIX.LAMPORTS_PER_TOKEN;
+      if (!confirm('Unstake ' + formatPrecise(lpAmt) + ' ' + UI.STRINGS.LP + ' from this position?')) return;
 
-    const loading = showToast('Processing LP Unstake...', 'loading');
-    try {
-      const userLpATA = getAssociatedTokenAddressSync(pos.poolMint, state.publicKey, false);
-      const ix = createUnstakeLPInstruction(state.publicKey, userLpATA, pos.poolMint, pos.stakeIndex);
-      await signAndConfirm(new Transaction().add(ix));
-      loading.remove();
-      showToast('LP Unstake successful!', 'success');
-      fetchLPStakerData();
-    } catch(e) {
-      loading.remove();
-      toastTxFailure(e, 'LP Unstake', () => handleLPUnstake(positionIndex));
-    }
+      const loading = showToast('Processing LP Unstake...', 'loading');
+      try {
+        const userLpATA = getAssociatedTokenAddressSync(pos.poolMint, state.publicKey, false);
+        const ataIx = await ensureAtaIx(state.publicKey, pos.poolMint, false);
+        const tx = new Transaction();
+        if (ataIx) tx.add(ataIx);
+        tx.add(createUnstakeLPInstruction(state.publicKey, userLpATA, pos.poolMint, pos.stakeIndex));
+        await signAndConfirm(tx);
+        loading.remove();
+        showToast('LP Unstake successful!', 'success');
+        fetchLPStakerData();
+      } catch(e) {
+        loading.remove();
+        toastTxFailure(e, 'LP Unstake', () => handleLPUnstake(positionIndex));
+      }
+    });
   }
   function renderStakes() {
     const container = document.getElementById('stakes-list');
@@ -1018,93 +1192,105 @@
     updatePreview();
   });
   async function doStake() {
-    if (!state.publicKey || !state.programState) return;
-    const amount = parseFloat(document.getElementById('stake-amount').value) || 0;
-    const amountLamports = BigInt(Math.floor(amount * ZARIX.LAMPORTS_PER_TOKEN));
-    const lockDays = BigInt(state.selectedLockDays);
-    const statusEl = document.getElementById('stake-status');
+    await withTxLock(async () => {
+      if (!state.publicKey || !state.programState) return;
+      const amount = parseFloat(document.getElementById('stake-amount').value) || 0;
+      const amountLamports = BigInt(Math.floor(amount * ZARIX.LAMPORTS_PER_TOKEN));
+      const lockDays = BigInt(state.selectedLockDays);
+      const statusEl = document.getElementById('stake-status');
 
-    try {
-      statusEl.className = 'form-status loading';
-      statusEl.textContent = '⏳ Preparing transaction...';
+      try {
+        statusEl.className = 'form-status loading';
+        statusEl.textContent = '⏳ Preparing transaction...';
 
-      const userTokenAccount = getAssociatedTokenAddressSync(TOKEN_MINT, state.publicKey, false);
-      const userAccount = await fetchUserAccount(state.connection, state.publicKey);
-      const stakeIndex = userAccount ? userAccount.nextStakeIndex : 0n;
+        const userTokenAccount = getAssociatedTokenAddressSync(TOKEN_MINT, state.publicKey, false);
+        const userAccount = await fetchUserAccount(state.connection, state.publicKey);
+        const stakeIndex = userAccount ? userAccount.nextStakeIndex : 0n;
 
-      const tx = new Transaction();
+        const tx = new Transaction();
 
-      if (!userAccount) {
-        const [userAccountPDA] = getUserAccountPDA(state.publicKey);
-        const rent = calculateMinimumRent(ZARIX.ACCOUNT_SIZES.USER_ACCOUNT);
-        tx.add(createPreFundInstruction(state.publicKey, userAccountPDA, rent));
+        if (!userAccount) {
+          const [userAccountPDA] = getUserAccountPDA(state.publicKey);
+          const rent = await getRentLamports(ZARIX.ACCOUNT_SIZES.USER_ACCOUNT);
+          tx.add(createPreFundInstruction(state.publicKey, userAccountPDA, rent));
+        }
+
+        const [stakePDA] = getStakePDA(state.publicKey, stakeIndex);
+        const stakeRent = await getRentLamports(ZARIX.ACCOUNT_SIZES.STAKE_PDA);
+        tx.add(createPreFundInstruction(state.publicKey, stakePDA, stakeRent));
+
+        tx.add(createStakeInstruction(state.publicKey, userTokenAccount, amountLamports, lockDays, stakeIndex));
+
+        statusEl.textContent = '⏳ Approve in wallet, then confirming...';
+        await signAndConfirm(tx);
+
+        statusEl.className = 'form-status success';
+        statusEl.textContent = '✅ Staked ' + amount.toLocaleString() + ' ' + UI.STRINGS.TOKEN + ' successfully!';
+        showToast('Staked ' + amount.toLocaleString() + ' ' + UI.STRINGS.TOKEN + '!', 'success');
+
+        document.getElementById('stake-amount').value = '';
+        await refreshAll();
+      } catch(e) {
+        statusEl.className = 'form-status error';
+        statusEl.textContent = handleTxError(e, 'Stake');
+        toastTxFailure(e, 'Stake', () => doStake());
       }
-
-      const [stakePDA] = getStakePDA(state.publicKey, stakeIndex);
-      const stakeRent = calculateMinimumRent(ZARIX.ACCOUNT_SIZES.STAKE_PDA);
-      tx.add(createPreFundInstruction(state.publicKey, stakePDA, stakeRent));
-
-      tx.add(createStakeInstruction(state.publicKey, userTokenAccount, amountLamports, lockDays, stakeIndex));
-
-      statusEl.textContent = '⏳ Approve in wallet, then confirming...';
-      await signAndConfirm(tx);
-
-      statusEl.className = 'form-status success';
-      statusEl.textContent = '✅ Staked ' + amount.toLocaleString() + ' ' + UI.STRINGS.TOKEN + ' successfully!';
-      showToast('Staked ' + amount.toLocaleString() + ' ' + UI.STRINGS.TOKEN + '!', 'success');
-
-      document.getElementById('stake-amount').value = '';
-      await refreshAll();
-    } catch(e) {
-      statusEl.className = 'form-status error';
-      statusEl.textContent = handleTxError(e, 'Stake');
-      toastTxFailure(e, 'Stake', () => doStake());
-    }
+    });
   }
   async function doClaim(stakeIndex) {
-    if (!state.publicKey) return;
-    const loading = showToast('Processing claim...', 'loading');
-    try {
-      const userTokenAccount = getAssociatedTokenAddressSync(TOKEN_MINT, state.publicKey, false);
-      const tx = new Transaction().add(createClaimInstruction(state.publicKey, userTokenAccount, BigInt(stakeIndex)));
-      await signAndConfirm(tx);
-      loading.remove();
-      showToast('Claim successful!', 'success');
-      await refreshAll();
-    } catch(e) {
-      loading.remove();
-      if (e.message?.includes('0x80') || e.message?.includes('cooldown')) {
-        const match = e.message?.match(/Wait (\d+) more seconds/);
-        const secs = match ? parseInt(match[1]) : 0;
-        const timeStr = secs > 0 ? formatDuration(secs) : '';
-        showToast('Claim cooldown active.' + (timeStr ? ' Try again in ~' + timeStr + '.' : ' Try again later.'), 'error');
+    await withTxLock(async () => {
+      if (!state.publicKey) return;
+      const loading = showToast('Processing claim...', 'loading');
+      try {
+        const userTokenAccount = getAssociatedTokenAddressSync(TOKEN_MINT, state.publicKey, false);
+        const ataIx = await ensureAtaIx(state.publicKey, TOKEN_MINT, false);
+        const tx = new Transaction();
+        if (ataIx) tx.add(ataIx);
+        tx.add(createClaimInstruction(state.publicKey, userTokenAccount, BigInt(stakeIndex)));
+        await signAndConfirm(tx);
+        loading.remove();
+        showToast('Claim successful!', 'success');
         await refreshAll();
-      } else {
-        toastTxFailure(e, 'Claim', () => doClaim(stakeIndex));
+      } catch(e) {
+        loading.remove();
+        if (e.message?.includes('0x80') || e.message?.includes('cooldown')) {
+          const match = e.message?.match(/Wait (\d+) more seconds/);
+          const secs = match ? parseInt(match[1]) : 0;
+          const timeStr = secs > 0 ? formatDuration(secs) : '';
+          showToast('Claim cooldown active.' + (timeStr ? ' Try again in ~' + timeStr + '.' : ' Try again later.'), 'error');
+          await refreshAll();
+        } else {
+          toastTxFailure(e, 'Claim', () => doClaim(stakeIndex));
+        }
       }
-    }
+    });
   }
   async function doUnstake(stakeIndex) {
-    const stake = state.userStakes.find(s => Number(s.stakeIndex) === stakeIndex);
-    if (!stake) return;
-    if (getLockStatus(Number(stake.lockEndTimestamp)) === 'locked') {
-      showToast('Lock period not expired yet!', 'error');
-      return;
-    }
-    if (!confirm('Are you sure you want to unstake? This will return your ' + UI.STRINGS.TOKEN + ' tokens.')) return;
+    await withTxLock(async () => {
+      const stake = state.userStakes.find(s => Number(s.stakeIndex) === stakeIndex);
+      if (!stake) return;
+      if (getLockStatus(Number(stake.lockEndTimestamp)) === 'locked') {
+        showToast('Lock period not expired yet!', 'error');
+        return;
+      }
+      if (!confirm('Are you sure you want to unstake? This will return your ' + UI.STRINGS.TOKEN + ' tokens.')) return;
 
-    const loading = showToast('Processing unstake...', 'loading');
-    try {
-      const userTokenAccount = getAssociatedTokenAddressSync(TOKEN_MINT, state.publicKey, false);
-      const tx = new Transaction().add(createUnstakeInstruction(state.publicKey, userTokenAccount, BigInt(stakeIndex)));
-      await signAndConfirm(tx);
-      loading.remove();
-      showToast('Unstake successful!', 'success');
-      await refreshAll();
-    } catch(e) {
-      loading.remove();
-      toastTxFailure(e, 'Unstake', () => doUnstake(stakeIndex));
-    }
+      const loading = showToast('Processing unstake...', 'loading');
+      try {
+        const userTokenAccount = getAssociatedTokenAddressSync(TOKEN_MINT, state.publicKey, false);
+        const ataIx = await ensureAtaIx(state.publicKey, TOKEN_MINT, false);
+        const tx = new Transaction();
+        if (ataIx) tx.add(ataIx);
+        tx.add(createUnstakeInstruction(state.publicKey, userTokenAccount, BigInt(stakeIndex)));
+        await signAndConfirm(tx);
+        loading.remove();
+        showToast('Unstake successful!', 'success');
+        await refreshAll();
+      } catch(e) {
+        loading.remove();
+        toastTxFailure(e, 'Unstake', () => doUnstake(stakeIndex));
+      }
+    });
   }
   window._claim = doClaim;
   window._unstake = doUnstake;
@@ -1117,11 +1303,7 @@
 
     if (rawUrl.startsWith('http') && !rawUrl.includes('127.0.0.1:3847')) {
       try {
-        await fetch(UI.APP.API_SET_RPC, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ rpc_url: rawUrl }),
-        });
+        await setProxyRpc(rawUrl);
         state.rpcUrl = UI.APP.PROXY_URL;
         localStorage.setItem(UI.STORAGE.RPC_URL, UI.APP.PROXY_URL);
         localStorage.setItem(UI.STORAGE.RPC_TARGET, rawUrl);
@@ -1134,7 +1316,7 @@
       localStorage.setItem(UI.STORAGE.RPC_URL, rawUrl);
     }
 
-    initConnection();
+    await initConnection();
     showToast('RPC URL saved!', 'success', 3000);
     if (state.publicKey) refreshAll();
   });
@@ -1142,17 +1324,15 @@
   document.getElementById('btn-reset-rpc').addEventListener('click', async () => {
     const defaultRpc = UI.APP.DEFAULT_SOLANA_RPC;
     try {
-      await fetch(UI.APP.API_SET_RPC, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rpc_url: defaultRpc }),
-      });
-    } catch(e) {}
+      await setProxyRpc(defaultRpc);
+    } catch(e) {
+      showToast('Failed to reset proxy: ' + e.message, 'error');
+    }
     localStorage.removeItem(UI.STORAGE.RPC_TARGET);
     localStorage.setItem(UI.STORAGE.RPC_URL, UI.APP.PROXY_URL);
     state.rpcUrl = UI.APP.PROXY_URL;
     document.getElementById('rpc-url').value = defaultRpc;
-    initConnection();
+    await initConnection();
     showToast('RPC reset to Solana Public', 'success', 3000);
     if (state.publicKey) refreshAll();
   });
@@ -1264,95 +1444,100 @@
   });
 
   async function doLPStake() {
-    if (!state.publicKey || !state.wallet || !state.lpGauges) return;
+    await withTxLock(async () => {
+      if (!state.publicKey || !state.wallet || !state.lpGauges) return;
 
-    const poolIdx = parseInt(document.getElementById('lp-pool-select').value);
-    const amountRaw = parseFloat(document.getElementById('lp-amount-input').value);
-    const lockDays = parseInt(document.getElementById('lp-lock-select').value);
+      const poolIdx = parseInt(document.getElementById('lp-pool-select').value);
+      const amountRaw = parseFloat(document.getElementById('lp-amount-input').value);
+      const lockDays = parseInt(document.getElementById('lp-lock-select').value);
 
-    if (isNaN(amountRaw) || amountRaw <= 0) {
-      showToast('Enter a valid LP amount', 'error');
-      return;
-    }
-
-    const gauge = state.lpGauges[poolIdx];
-    if (!gauge) { showToast('Invalid pool selection', 'error'); return; }
-
-    const amountLamports = BigInt(Math.round(amountRaw * ZARIX.LAMPORTS_PER_TOKEN));
-
-    const loading = showToast('Building LP Stake transaction...', 'loading');
-    try {
-      const [lpGaugePDA] = getLPGaugePDA(gauge.poolMint);
-      const [lpStakerPDA] = getLPStakerPDA(lpGaugePDA, state.publicKey);
-      const stakerInfo = await state.connection.getAccountInfo(lpStakerPDA);
-      let nextIndex = 0n;
-      if (stakerInfo) {
-        const staker = parseLPStakerAccount(stakerInfo.data);
-        nextIndex = staker.nextStakeIndex;
+      if (isNaN(amountRaw) || amountRaw <= 0) {
+        showToast('Enter a valid LP amount', 'error');
+        return;
       }
 
-      const userLpATA = getAssociatedTokenAddressSync(gauge.poolMint, state.publicKey, false);
+      const gauge = state.lpGauges[poolIdx];
+      if (!gauge) { showToast('Invalid pool selection', 'error'); return; }
 
-      let preIx = null;
+      const amountLamports = BigInt(Math.round(amountRaw * ZARIX.LAMPORTS_PER_TOKEN));
+
+      const loading = showToast('Building LP Stake transaction...', 'loading');
       try {
-        await getAccount(state.connection, userLpATA);
+        const [lpGaugePDA] = getLPGaugePDA(gauge.poolMint);
+        const [lpStakerPDA] = getLPStakerPDA(lpGaugePDA, state.publicKey);
+        const stakerInfo = await state.connection.getAccountInfo(lpStakerPDA);
+        let nextIndex = 0n;
+        if (stakerInfo) {
+          const staker = parseLPStakerAccount(stakerInfo.data);
+          nextIndex = staker.nextStakeIndex;
+        }
+
+        const userLpATA = getAssociatedTokenAddressSync(gauge.poolMint, state.publicKey, false);
+
+        let preIx = null;
+        try {
+          await getAccount(state.connection, userLpATA);
+        } catch(e) {
+          if (!isTokenAccountMissing(e)) throw e;
+          preIx = createAssociatedTokenAccountInstruction(state.publicKey, userLpATA, state.publicKey, gauge.poolMint);
+        }
+
+        const [lpVaultPDA] = getLPVaultPDA(lpGaugePDA);
+        const lpVaultAta = getAssociatedTokenAddressSync(gauge.poolMint, lpVaultPDA, true);
+        let vaultAtaIx = null;
+        try {
+          await getAccount(state.connection, lpVaultAta);
+        } catch(e) {
+          if (!isTokenAccountMissing(e)) throw e;
+          vaultAtaIx = createAssociatedTokenAccountInstruction(state.publicKey, lpVaultAta, lpVaultPDA, gauge.poolMint);
+        }
+
+        let stakerRentIx = null;
+        if (!stakerInfo) {
+          const rentLamports = await getRentLamports(ZARIX.ACCOUNT_SIZES.LP_STAKER);
+          stakerRentIx = createPreFundInstruction(state.publicKey, lpStakerPDA, rentLamports);
+        }
+
+        const [lpStakePDA] = getLPStakePDA(lpGaugePDA, state.publicKey, nextIndex);
+        const stakeRentLamports = await getRentLamports(ZARIX.ACCOUNT_SIZES.LP_STAKE_PDA);
+        const stakeRentIx = createPreFundInstruction(state.publicKey, lpStakePDA, stakeRentLamports);
+
+        const ix = createStakeLPInstruction(
+          state.publicKey,
+          userLpATA,
+          gauge.poolMint,
+          amountLamports,
+          BigInt(lockDays),
+          nextIndex
+        );
+
+        const tx = new Transaction();
+        if (preIx) tx.add(preIx);
+        if (vaultAtaIx) tx.add(vaultAtaIx);
+        if (stakerRentIx) tx.add(stakerRentIx);
+        tx.add(stakeRentIx);
+        tx.add(ix);
+
+        await signAndConfirm(tx);
+        loading.remove();
+        showToast('LP Stake successful! ✅', 'success');
+        document.getElementById('lp-amount-input').value = '';
+        fetchLPStakerData();
       } catch(e) {
-        preIx = createAssociatedTokenAccountInstruction(state.publicKey, userLpATA, state.publicKey, gauge.poolMint);
+        loading.remove();
+        toastTxFailure(e, 'LP Stake', () => doLPStake());
       }
-
-      const [lpVaultPDA] = getLPVaultPDA(lpGaugePDA);
-      const lpVaultAta = getAssociatedTokenAddressSync(gauge.poolMint, lpVaultPDA, true);
-      let vaultAtaIx = null;
-      try {
-        await getAccount(state.connection, lpVaultAta);
-      } catch(e) {
-        vaultAtaIx = createAssociatedTokenAccountInstruction(state.publicKey, lpVaultAta, lpVaultPDA, gauge.poolMint);
-      }
-
-      let stakerRentIx = null;
-      if (!stakerInfo) {
-        const rentLamports = calculateMinimumRent(ZARIX.ACCOUNT_SIZES.LP_STAKER);
-        stakerRentIx = createPreFundInstruction(state.publicKey, lpStakerPDA, rentLamports);
-      }
-
-      const [lpStakePDA] = getLPStakePDA(lpGaugePDA, state.publicKey, nextIndex);
-      const stakeRentLamports = calculateMinimumRent(ZARIX.ACCOUNT_SIZES.LP_STAKE_PDA);
-      const stakeRentIx = createPreFundInstruction(state.publicKey, lpStakePDA, stakeRentLamports);
-
-      const ix = createStakeLPInstruction(
-        state.publicKey,
-        userLpATA,
-        gauge.poolMint,
-        amountLamports,
-        BigInt(lockDays),
-        nextIndex
-      );
-
-      const tx = new Transaction();
-      if (preIx) tx.add(preIx);
-      if (vaultAtaIx) tx.add(vaultAtaIx);
-      if (stakerRentIx) tx.add(stakerRentIx);
-      tx.add(stakeRentIx);
-      tx.add(ix);
-
-      await signAndConfirm(tx);
-      loading.remove();
-      showToast('LP Stake successful! ✅', 'success');
-      document.getElementById('lp-amount-input').value = '';
-      fetchLPStakerData();
-    } catch(e) {
-      loading.remove();
-      toastTxFailure(e, 'LP Stake', () => doLPStake());
-    }
+    });
   }
 
   document.getElementById('btn-lp-stake').addEventListener('click', doLPStake);
-  initConnection();
-  setTimeout(() => {
-    const provider = getProvider();
-    if (provider?.isConnected) {
-      connectWallet();
-    }
-  }, UI.TIME.AUTO_CONNECT_DELAY_MS);
+  initConnection().then(() => {
+    setTimeout(() => {
+      const provider = getProvider();
+      if (provider?.isConnected) {
+        connectWallet();
+      }
+    }, UI.TIME.AUTO_CONNECT_DELAY_MS);
+  });
 
 })();

@@ -11,6 +11,7 @@ module.exports = {
   Transaction: solanaWeb3.Transaction,
   TransactionInstruction: solanaWeb3.TransactionInstruction,
   SystemProgram: solanaWeb3.SystemProgram,
+  ComputeBudgetProgram: solanaWeb3.ComputeBudgetProgram,
   SYSVAR_RENT_PUBKEY: solanaWeb3.SYSVAR_RENT_PUBKEY,
   SYSVAR_CLOCK_PUBKEY: solanaWeb3.SYSVAR_CLOCK_PUBKEY,
   LAMPORTS_PER_SOL: solanaWeb3.LAMPORTS_PER_SOL,
@@ -18,6 +19,7 @@ module.exports = {
   getAssociatedTokenAddressSync: splToken.getAssociatedTokenAddressSync,
   getAssociatedTokenAddress: splToken.getAssociatedTokenAddress,
   getAccount: splToken.getAccount,
+  TokenAccountNotFoundError: splToken.TokenAccountNotFoundError,
   ASSOCIATED_TOKEN_PROGRAM_ID: splToken.ASSOCIATED_TOKEN_PROGRAM_ID,
   createAssociatedTokenAccountInstruction: splToken.createAssociatedTokenAccountInstruction,
 };
